@@ -91,6 +91,21 @@ NEXT_PUBLIC_APP_URL="http://localhost:3000"
 # OpenAI
 OPENAI_API_KEY=""
 
+# LLM Provider
+LLM_PROVIDER="openai"
+LLM_MODEL=""
+LLM_TITLE_MODEL=""
+LLM_RESPONSE_MODEL=""
+
+# OpenRouter (optional)
+OPENROUTER_API_KEY=""
+OPENROUTER_BASE_URL="https://openrouter.ai/api/v1/"
+OPENROUTER_REFERRER=""
+OPENROUTER_TITLE=""
+
+# Platform Org (for admin LLM settings)
+PLATFORM_ORG_ID=""
+
 # E2B
 E2B_API_KEY=""
 
@@ -102,6 +117,8 @@ NEXT_PUBLIC_CLERK_SIGN_UP_URL="/sign-up"
 NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL="/"
 NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL="/"
 ```
+
+When `LLM_PROVIDER` is set to `openrouter`, the default model is `z-ai/glm-5` unless you override `LLM_MODEL`.
 
 ## Additional Commands
 
@@ -132,7 +149,7 @@ npm run lint           # Run ESLint
 ## How It Works
 
 1. **Project Creation**: Users create projects and describe what they want to build
-2. **AI Processing**: Messages are sent to GPT-4 agents via Inngest background jobs
+2. **AI Processing**: Messages are sent to LLM agents via Inngest background jobs
 3. **Code Generation**: AI agents use E2B sandboxes to generate and test Next.js applications
 4. **Real-time Updates**: Generated code and previews are displayed in split-pane interface
 5. **File Management**: Users can browse generated files with syntax highlighting

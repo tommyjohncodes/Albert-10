@@ -18,6 +18,7 @@ model Project {
   id  String @id @default(uuid())
   name  String
   userId String
+  orgId String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -65,4 +66,14 @@ model Usage {
   key String  @id
   points Int
   expire DateTime?
+}
+
+model OrgLlmSettings {
+  orgId String @id
+  provider String @default("openai")
+  model String
+  titleModel String?
+  responseModel String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }

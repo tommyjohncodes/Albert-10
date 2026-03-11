@@ -64,6 +64,7 @@ export const projectsRouter = createTRPCRouter({
       const createdProject = await prisma.project.create({
         data: {
           userId: ctx.auth.userId,
+          orgId: ctx.auth.orgId ?? null,
           name: generateSlug(2, {
             format: "kebab",
           }),
@@ -82,6 +83,7 @@ export const projectsRouter = createTRPCRouter({
         data: {
           value: input.value,
           projectId: createdProject.id,
+          orgId: createdProject.orgId,
         },
       });
 

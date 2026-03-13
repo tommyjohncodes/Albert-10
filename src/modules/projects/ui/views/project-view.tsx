@@ -1,12 +1,9 @@
 "use client";
 
-import Link from "next/link";
-import { useAuth } from "@clerk/nextjs";
 import { Suspense, useState } from "react";
-import { EyeIcon, CodeIcon, CrownIcon } from "lucide-react";
+import { EyeIcon, CodeIcon } from "lucide-react";
 
 import { Fragment } from "@/generated/prisma";
-import { Button } from "@/components/ui/button";
 import { UserControl } from "@/components/user-control";
 import { FileExplorer } from "@/components/file-explorer";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -26,9 +23,6 @@ interface Props {
 };
 
 export const ProjectView = ({ projectId }: Props) => {
-  const { has } = useAuth();
-  const hasProAccess = has?.({ plan: "pro" });
-
   const [activeFragment, setActiveFragment] = useState<Fragment | null>(null);
   const [tabState, setTabState] = useState<"preview" | "code">("preview");
 
@@ -76,13 +70,6 @@ export const ProjectView = ({ projectId }: Props) => {
                 </TabsTrigger>
               </TabsList>
               <div className="ml-auto flex items-center gap-x-2">
-                {!hasProAccess && (
-                  <Button asChild size="sm" variant="tertiary">
-                    <Link href="/pricing">
-                      <CrownIcon /> Upgrade
-                    </Link>
-                  </Button>
-                )}
                 <UserControl />
               </div>
             </div>

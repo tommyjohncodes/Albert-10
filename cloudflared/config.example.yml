@@ -1,0 +1,7 @@
+tunnel: YOUR_TUNNEL_ID_OR_NAME
+credentials-file: /Users/your-user/.cloudflared/YOUR_TUNNEL_ID.json
+
+ingress:
+  - hostname: dev.your-domain.com
+    service: http://localhost:3000
+  - service: http_status:404

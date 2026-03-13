@@ -3,6 +3,7 @@ import "server-only";
 import { openai } from "@inngest/agent-kit";
 
 import { prisma } from "@/lib/db";
+import { decryptSecret } from "@/lib/secrets";
 
 export type LlmProvider = "openai" | "openrouter";
 
@@ -14,6 +15,24 @@ export interface LlmConfig {
 }
 
 const OPENROUTER_BASE_URL_DEFAULT = "https://openrouter.ai/api/v1/";
+const DEFAULT_MAX_TOKENS = {
+  code: 8192,
+  title: 256,
+  response: 1024,
+};
+
+const parseMaxTokens = (value: string | undefined, fallback: number) => {
+  if (!value) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return parsed;
+  }
+
+  return fallback;
+};
 
 const DEFAULT_MODELS: Record<LlmProvider, Omit<LlmConfig, "provider">> = {
   openai: {
@@ -89,10 +108,11 @@ export async function resolveLlmConfig(orgId?: string | null): Promise<LlmConfig
 const buildModel = (
   provider: LlmProvider,
   model: string,
+  orgOpenRouterApiKey?: string | null,
   defaultParameters?: Parameters<typeof openai>[0]["defaultParameters"]
 ) => {
   if (provider === "openrouter") {
-    const apiKey = process.env.OPENROUTER_API_KEY;
+    const apiKey = orgOpenRouterApiKey ?? process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
       throw new Error("OPENROUTER_API_KEY is required when using OpenRouter");
     }
@@ -126,13 +146,55 @@ const buildModel = (
 
 export async function getLlmModels(orgId?: string | null) {
   const config = await resolveLlmConfig(orgId);
+  const settings = orgId
+    ? await prisma.orgLlmSettings.findUnique({
+        where: { orgId },
+        select: { openrouterApiKey: true },
+      })
+    : null;
+
+  let orgOpenRouterApiKey: string | null = null;
+  if (settings?.openrouterApiKey) {
+    try {
+      orgOpenRouterApiKey = decryptSecret(settings.openrouterApiKey);
+    } catch {
+      throw new Error(
+        "Failed to decrypt org OpenRouter key. Check OPENROUTER_KEY_ENCRYPTION_KEY."
+      );
+    }
+  }
+
+  const maxTokens = {
+    code: parseMaxTokens(
+      process.env.LLM_CODE_MAX_TOKENS ?? process.env.LLM_MAX_TOKENS,
+      DEFAULT_MAX_TOKENS.code,
+    ),
+    title: parseMaxTokens(
+      process.env.LLM_TITLE_MAX_TOKENS ?? process.env.LLM_MAX_TOKENS,
+      DEFAULT_MAX_TOKENS.title,
+    ),
+    response: parseMaxTokens(
+      process.env.LLM_RESPONSE_MAX_TOKENS ?? process.env.LLM_MAX_TOKENS,
+      DEFAULT_MAX_TOKENS.response,
+    ),
+  };
 
   return {
     provider: config.provider,
-    code: buildModel(config.provider, config.codeModel, {
+    modelNames: {
+      code: config.codeModel,
+      title: config.titleModel,
+      response: config.responseModel,
+    },
+    code: buildModel(config.provider, config.codeModel, orgOpenRouterApiKey, {
       temperature: 0.1,
+      max_tokens: maxTokens.code,
     }),
-    title: buildModel(config.provider, config.titleModel),
-    response: buildModel(config.provider, config.responseModel),
+    title: buildModel(config.provider, config.titleModel, orgOpenRouterApiKey, {
+      max_tokens: maxTokens.title,
+    }),
+    response: buildModel(config.provider, config.responseModel, orgOpenRouterApiKey, {
+      max_tokens: maxTokens.response,
+    }),
   };
 }

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ExternalLinkIcon, RefreshCcwIcon } from "lucide-react";
 
 import { Hint } from "@/components/hint";
@@ -9,9 +9,37 @@ interface Props {
   data: Fragment;
 };
 
+const HEARTBEAT_INTERVAL_MS = 60_000;
+
 export function FragmentWeb({ data }: Props) {
   const [copied, setCopied] = useState(false);
   const [fragmentKey, setFragmentKey] = useState(0);
+
+  useEffect(() => {
+    if (!data?.id || !data?.sandboxUrl) return;
+    let isActive = true;
+
+    const sendHeartbeat = async () => {
+      if (!isActive) return;
+      try {
+        await fetch("/api/sandbox/heartbeat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fragmentId: data.id }),
+        });
+      } catch {
+        // Best-effort heartbeat; ignore failures.
+      }
+    };
+
+    void sendHeartbeat();
+    const interval = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
+
+    return () => {
+      isActive = false;
+      clearInterval(interval);
+    };
+  }, [data?.id, data?.sandboxUrl]);
 
   const onRefresh = () => {
     setFragmentKey((prev) => prev + 1);

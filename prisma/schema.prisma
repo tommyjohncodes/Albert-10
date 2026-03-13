@@ -19,6 +19,8 @@ model Project {
   name  String
   userId String
   orgId String?
+  sandboxId String? @unique
+  sandboxUpdatedAt DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -70,10 +72,32 @@ model Usage {
 
 model OrgLlmSettings {
   orgId String @id
-  provider String @default("openai")
+  provider String @default("openrouter")
   model String
   titleModel String?
   responseModel String?
+  openrouterApiKey String?
+  openrouterKeyUpdatedAt DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model LlmUsage {
+  id String @id @default(uuid())
+  userId String?
+  orgId String?
+  provider String
+  model String
+  promptTokens Int @default(0)
+  completionTokens Int @default(0)
+  totalTokens Int @default(0)
+  createdAt DateTime @default(now())
+}
+
+model PlatformSettings {
+  id String @id
+  vercelAccessToken String?
+  vercelTokenUpdatedAt DateTime?
+  updatedByUserId String?
+  updatedAt DateTime @default(now()) @updatedAt
 }

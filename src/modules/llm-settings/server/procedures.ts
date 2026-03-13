@@ -2,9 +2,10 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 
 import { prisma } from "@/lib/db";
+import { encryptSecret } from "@/lib/secrets";
 import { protectedProcedure, createTRPCRouter } from "@/trpc/init";
 
-const ProviderSchema = z.enum(["openai", "openrouter"]);
+const ProviderSchema = z.enum(["openrouter"]);
 
 const SettingsInputSchema = z.object({
   orgId: z.string().min(1, { message: "Org ID is required" }),
@@ -12,6 +13,7 @@ const SettingsInputSchema = z.object({
   model: z.string().min(1, { message: "Model is required" }),
   titleModel: z.string().min(1).optional(),
   responseModel: z.string().min(1).optional(),
+  openrouterApiKey: z.string().optional(),
 });
 
 const getPlatformOrgId = () => {
@@ -58,14 +60,39 @@ export const llmSettingsRouter = createTRPCRouter({
         });
       }
 
-      return prisma.orgLlmSettings.findUnique({
+      const settings = await prisma.orgLlmSettings.findUnique({
         where: { orgId: targetOrgId },
       });
+
+      if (!settings) {
+        return null;
+      }
+
+      return {
+        orgId: settings.orgId,
+        provider: settings.provider,
+        model: settings.model,
+        titleModel: settings.titleModel,
+        responseModel: settings.responseModel,
+        hasOpenRouterKey: Boolean(settings.openrouterApiKey),
+        openrouterKeyUpdatedAt: settings.openrouterKeyUpdatedAt,
+      };
     }),
   upsert: protectedProcedure
     .input(SettingsInputSchema)
     .mutation(async ({ ctx, input }) => {
       requirePlatformOrg(ctx.auth.orgId);
+
+      const keyValue = input.openrouterApiKey?.trim() ?? "";
+      let encryptedKey: string | null | undefined = undefined;
+
+      if (input.openrouterApiKey !== undefined) {
+        if (!keyValue) {
+          encryptedKey = null;
+        } else {
+          encryptedKey = encryptSecret(keyValue);
+        }
+      }
 
       return prisma.orgLlmSettings.upsert({
         where: { orgId: input.orgId },
@@ -74,6 +101,12 @@ export const llmSettingsRouter = createTRPCRouter({
           model: input.model,
           titleModel: input.titleModel,
           responseModel: input.responseModel,
+          ...(input.openrouterApiKey !== undefined
+            ? {
+                openrouterApiKey: encryptedKey,
+                openrouterKeyUpdatedAt: new Date(),
+              }
+            : {}),
         },
         create: {
           orgId: input.orgId,
@@ -81,6 +114,9 @@ export const llmSettingsRouter = createTRPCRouter({
           model: input.model,
           titleModel: input.titleModel,
           responseModel: input.responseModel,
+          openrouterApiKey: encryptedKey ?? null,
+          openrouterKeyUpdatedAt:
+            input.openrouterApiKey !== undefined ? new Date() : null,
         },
       });
     }),

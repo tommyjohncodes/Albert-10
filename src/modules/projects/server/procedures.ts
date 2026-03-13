@@ -4,8 +4,37 @@ import { generateSlug } from "random-word-slugs";
 import { prisma } from "@/lib/db";
 import { TRPCError } from "@trpc/server";
 import { inngest } from "@/inngest/client";
-import { consumeCredits } from "@/lib/usage";
 import { protectedProcedure, createTRPCRouter } from "@/trpc/init";
+import { createClerkClient } from "@clerk/nextjs/server";
+
+const getClerkClient = () => {
+  const secretKey = process.env.CLERK_SECRET_KEY;
+  if (!secretKey) {
+    return null;
+  }
+  return createClerkClient({ secretKey });
+};
+
+const resolveOrgIdForUser = async (
+  userId: string,
+  currentOrgId?: string | null
+) => {
+  if (currentOrgId) return currentOrgId;
+
+  const client = getClerkClient();
+  if (!client) return null;
+
+  const memberships = await client.users.getOrganizationMembershipList({
+    userId,
+    limit: 2,
+  });
+
+  if (memberships.data.length === 1) {
+    return memberships.data[0]?.organization?.id ?? null;
+  }
+
+  return null;
+};
 
 export const projectsRouter = createTRPCRouter({
   getOne: protectedProcedure
@@ -18,13 +47,48 @@ export const projectsRouter = createTRPCRouter({
           id: input.id,
           userId: ctx.auth.userId,
         },
+        select: {
+          id: true,
+          name: true,
+          userId: true,
+          orgId: true,
+          sandboxId: true,
+          sandboxUpdatedAt: true,
+          createdAt: true,
+          updatedAt: true,
+          messages: {
+            where: {
+              role: "ASSISTANT",
+              fragment: { isNot: null },
+            },
+            orderBy: {
+              createdAt: "desc",
+            },
+            take: 1,
+            select: {
+              fragment: {
+                select: {
+                  title: true,
+                },
+              },
+            },
+          },
+        },
       });
 
       if (!existingProject) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
       }
 
-      return existingProject;
+      const displayTitle =
+        existingProject.messages[0]?.fragment?.title ?? existingProject.name;
+
+      const { messages: _messages, ...project } = existingProject;
+
+      return {
+        ...project,
+        displayTitle,
+      };
     }),
   getMany: protectedProcedure
     .query(async ({ ctx }) => {
@@ -35,9 +99,80 @@ export const projectsRouter = createTRPCRouter({
         orderBy: {
           updatedAt: "desc",
         },
+        select: {
+          id: true,
+          name: true,
+          userId: true,
+          orgId: true,
+          sandboxId: true,
+          sandboxUpdatedAt: true,
+          createdAt: true,
+          updatedAt: true,
+          messages: {
+            where: {
+              role: "ASSISTANT",
+              fragment: { isNot: null },
+            },
+            orderBy: {
+              createdAt: "desc",
+            },
+            take: 1,
+            select: {
+              fragment: {
+                select: {
+                  title: true,
+                },
+              },
+            },
+          },
+        },
       });
 
-      return projects;
+      return projects.map((project) => {
+        const displayTitle =
+          project.messages[0]?.fragment?.title ?? project.name;
+        const { messages: _messages, ...rest } = project;
+        return { ...rest, displayTitle };
+      });
+    }),
+  getSidebarList: protectedProcedure
+    .query(async ({ ctx }) => {
+      const projects = await prisma.project.findMany({
+        where: {
+          userId: ctx.auth.userId,
+        },
+        orderBy: {
+          updatedAt: "desc",
+        },
+        select: {
+          id: true,
+          name: true,
+          updatedAt: true,
+          messages: {
+            where: {
+              role: "ASSISTANT",
+              fragment: { isNot: null },
+            },
+            orderBy: {
+              createdAt: "desc",
+            },
+            take: 1,
+            select: {
+              fragment: {
+                select: {
+                  title: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      return projects.map((project) => ({
+        id: project.id,
+        updatedAt: project.updatedAt,
+        title: project.messages[0]?.fragment?.title ?? project.name,
+      }));
     }),
   create: protectedProcedure
     .input(
@@ -48,23 +183,15 @@ export const projectsRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      try {
-        await consumeCredits();
-      } catch (error) {
-        if (error instanceof Error) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "Something went wrong" });
-        } else {
-          throw new TRPCError({
-            code: "TOO_MANY_REQUESTS",
-            message: "You have run out of credits"
-          });
-        }
-      }
+      const orgId = await resolveOrgIdForUser(
+        ctx.auth.userId,
+        ctx.auth.orgId ?? null
+      );
 
       const createdProject = await prisma.project.create({
         data: {
           userId: ctx.auth.userId,
-          orgId: ctx.auth.orgId ?? null,
+          orgId,
           name: generateSlug(2, {
             format: "kebab",
           }),
@@ -84,9 +211,33 @@ export const projectsRouter = createTRPCRouter({
           value: input.value,
           projectId: createdProject.id,
           orgId: createdProject.orgId,
+          userId: ctx.auth.userId,
         },
       });
 
       return createdProject;
+    }),
+  delete: protectedProcedure
+    .input(z.object({
+      id: z.string().min(1, { message: "Id is required" }),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const existingProject = await prisma.project.findFirst({
+        where: {
+          id: input.id,
+          userId: ctx.auth.userId,
+        },
+        select: { id: true },
+      });
+
+      if (!existingProject) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
+      }
+
+      await prisma.project.delete({
+        where: { id: input.id },
+      });
+
+      return { id: input.id };
     }),
 });

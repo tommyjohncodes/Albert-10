@@ -88,6 +88,12 @@ Create a `.env` file with the following variables:
 DATABASE_URL=""
 NEXT_PUBLIC_APP_URL="http://localhost:3000"
 
+# Inngest (Cloud)
+INNGEST_EVENT_KEY=""
+INNGEST_DEV="0"
+INNGEST_SIGNING_KEY=""
+INNGEST_SERVE_HOST=""
+
 # OpenAI
 OPENAI_API_KEY=""
 
@@ -102,9 +108,14 @@ OPENROUTER_API_KEY=""
 OPENROUTER_BASE_URL="https://openrouter.ai/api/v1/"
 OPENROUTER_REFERRER=""
 OPENROUTER_TITLE=""
+OPENROUTER_KEY_ENCRYPTION_KEY=""
+OPENROUTER_KEY_ENCRYPTION_KEY=""
 
 # Platform Org (for admin LLM settings)
 PLATFORM_ORG_ID=""
+
+# Admin access (comma-separated Clerk user IDs)
+ADMIN_USER_IDS=""
 
 # E2B
 E2B_API_KEY=""
@@ -118,7 +129,48 @@ NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL="/"
 NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL="/"
 ```
 
+## Permanent Local Inngest Tunnel (Cloudflare)
+
+To keep a stable `INNGEST_SERVE_HOST` for local development, use a named Cloudflare tunnel with a fixed hostname.
+
+1. Install and authenticate cloudflared:
+   ```bash
+   brew install cloudflared
+   cloudflared login
+   ```
+
+2. Create a named tunnel and map it to a hostname:
+   ```bash
+   cloudflared tunnel create albert-dev
+   cloudflared tunnel route dns albert-dev dev.your-domain.com
+   ```
+
+3. Create a local config from the template:
+   ```bash
+   cp cloudflared/config.example.yml cloudflared/config.yml
+   ```
+   Update `cloudflared/config.yml` with your tunnel ID/name, credentials file path, and hostname.
+
+4. Run the tunnel:
+   ```bash
+   npm run tunnel
+   ```
+
+5. Update `.env`:
+   ```bash
+   INNGEST_SERVE_HOST="https://dev.your-domain.com"
+   ```
+
+Keep the tunnel running while `npm run dev` is running. The hostname stays stable across restarts.
+
 When `LLM_PROVIDER` is set to `openrouter`, the default model is `z-ai/glm-5` unless you override `LLM_MODEL`.
+
+## Admin Panel
+
+- Visit `/admin` as an allowlisted admin user.
+- Set `ADMIN_USER_IDS` to one or more Clerk user IDs (comma-separated) to grant admin access.
+- Org detail pages allow setting per-org provider/model and an encrypted per-org OpenRouter key.
+- Admin pages include org and user LLM usage metrics (totals, daily chart, usage by provider, usage by model).
 
 ## Additional Commands
 

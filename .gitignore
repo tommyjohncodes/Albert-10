@@ -44,3 +44,7 @@ next-env.d.ts
 
 # clerk configuration (can include secrets)
 /.clerk/
+
+# cloudflared tunnel (local dev)
+/cloudflared/config.yml
+/cloudflared/*.json

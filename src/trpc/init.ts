@@ -2,6 +2,7 @@ import { auth } from '@clerk/nextjs/server';
 import { initTRPC, TRPCError } from '@trpc/server';
 import { cache } from 'react';
 import superjson from "superjson";
+import { isAdmin } from '@/lib/admin';
 export const createTRPCContext = cache(async () => {
   return { auth: await auth() };
 });
@@ -32,8 +33,22 @@ const isAuthed = t.middleware(({ next, ctx }) => {
   });
 });
 
+const isAdminMiddleware = t.middleware(({ next, ctx }) => {
+  if (!isAdmin(ctx.auth.userId)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Admin access required",
+    });
+  }
+
+  return next({
+    ctx,
+  });
+});
+
 // Base router and procedure helpers
 export const createTRPCRouter = t.router;
 export const createCallerFactory = t.createCallerFactory;
 export const baseProcedure = t.procedure;
 export const protectedProcedure = t.procedure.use(isAuthed);
+export const adminProcedure = t.procedure.use(isAuthed).use(isAdminMiddleware);

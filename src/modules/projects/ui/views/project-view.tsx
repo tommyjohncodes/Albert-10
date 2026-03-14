@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/resizable";
 import { useTRPC } from "@/trpc/client";
 
+import { ElementPickerProvider } from "../components/element-picker-context";
 import { FragmentWeb } from "../components/fragment-web";
 import { ProjectHeader } from "../components/project-header";
 import { MessagesContainer } from "../components/messages-container";
@@ -38,8 +39,9 @@ export const ProjectView = ({ projectId }: Props) => {
   );
 
   return (
-    <div className="h-screen">
-      <ResizablePanelGroup direction="horizontal">
+    <ElementPickerProvider>
+      <div className="h-screen">
+        <ResizablePanelGroup direction="horizontal">
         <ResizablePanel
           defaultSize={35}
           minSize={20}
@@ -101,7 +103,8 @@ export const ProjectView = ({ projectId }: Props) => {
             </TabsContent>
           </Tabs>
         </ResizablePanel>
-      </ResizablePanelGroup>
-    </div>
+        </ResizablePanelGroup>
+      </div>
+    </ElementPickerProvider>
   );
 };

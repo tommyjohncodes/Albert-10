@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ExternalLinkIcon, RefreshCcwIcon } from "lucide-react";
 
 import { Hint } from "@/components/hint";
 import { FragmentPreview } from "../types";
 import { Button } from "@/components/ui/button";
+import { useElementPicker } from "./element-picker-context";
 
 interface Props {
   data: FragmentPreview;
@@ -18,10 +19,29 @@ export function FragmentWeb({ data }: Props) {
     data?.sandboxUrl ?? null,
   );
   const lastWakeAtRef = useRef(0);
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const { isPicking, setPreviewTarget, stopPicking } = useElementPicker();
+
+  const previewOrigin = useMemo(() => {
+    if (!currentSandboxUrl) return null;
+    try {
+      return new URL(currentSandboxUrl).origin;
+    } catch {
+      return null;
+    }
+  }, [currentSandboxUrl]);
 
   useEffect(() => {
     setCurrentSandboxUrl(data?.sandboxUrl ?? null);
   }, [data?.sandboxUrl]);
+
+  useEffect(() => {
+    setPreviewTarget({
+      window: iframeRef.current?.contentWindow ?? null,
+      origin: previewOrigin,
+      url: currentSandboxUrl,
+    });
+  }, [currentSandboxUrl, previewOrigin, setPreviewTarget]);
 
   const wakeSandbox = useCallback(async (force = false) => {
     if (!data?.id || !data?.sandboxUrl) return false;
@@ -93,6 +113,11 @@ export function FragmentWeb({ data }: Props) {
             <RefreshCcwIcon />
           </Button>
         </Hint>
+        {isPicking && (
+          <div className="rounded-full border px-2 py-1 text-xs font-medium bg-muted/60">
+            Picking element… press Esc to cancel
+          </div>
+        )}
         <Hint text="Click to copy" side="bottom">
           <Button 
             size="sm" 
@@ -119,16 +144,36 @@ export function FragmentWeb({ data }: Props) {
             <ExternalLinkIcon />
           </Button>
         </Hint>
+        {isPicking && (
+          <Button size="sm" variant="ghost" onClick={stopPicking}>
+            Cancel
+          </Button>
+        )}
       </div>
       <div className="relative flex-1">
+        {isPicking && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-start justify-center pt-6">
+            <div className="rounded-full border bg-background/95 px-3 py-1 text-xs font-medium shadow-sm">
+              Click an element in the preview to target it.
+            </div>
+          </div>
+        )}
         <iframe
           key={fragmentKey}
+          ref={iframeRef}
           className="h-full w-full"
           sandbox="allow-forms allow-scripts allow-same-origin"
           loading="lazy"
           src={currentSandboxUrl ?? undefined}
           onPointerDown={() => wakeSandbox()}
           onFocus={() => wakeSandbox()}
+          onLoad={() => {
+            setPreviewTarget({
+              window: iframeRef.current?.contentWindow ?? null,
+              origin: previewOrigin,
+              url: currentSandboxUrl,
+            });
+          }}
         />
       </div>
     </div>

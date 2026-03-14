@@ -3,6 +3,7 @@ import { auth } from "@clerk/nextjs/server";
 import { Sandbox } from "@e2b/code-interpreter";
 
 import { prisma } from "@/lib/db";
+import { getClerkSecretKey } from "@/lib/clerk-server";
 import {
   ensureProjectSandbox,
   touchProjectSandbox,
@@ -29,6 +30,7 @@ const extractSandboxId = (sandboxUrl: string) => {
 };
 
 export async function POST(req: Request) {
+  getClerkSecretKey();
   const { userId } = await auth();
   if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

@@ -14,6 +14,7 @@ import {
 } from "@/lib/sandbox-preview";
 import { SANDBOX_TIMEOUT } from "@/inngest/types";
 import { recordSandboxUsage } from "@/lib/sandbox-usage";
+import { ensureSandboxElementPicker } from "@/lib/sandbox-element-picker";
 
 const extractSandboxId = (sandboxUrl: string) => {
   try {
@@ -90,6 +91,7 @@ export async function POST(req: Request) {
     const sandbox = await Sandbox.connect(sandboxId);
     await ensureSandboxPreviewReady(sandboxId);
     const sandboxUrl = `https://${sandbox.getHost(SANDBOX_PREVIEW_PORT)}`;
+    const pickerStatus = await ensureSandboxElementPicker(sandbox);
     await sandbox.setTimeout(SANDBOX_TIMEOUT);
     await recordSandboxUsage({
       projectId: fragment.message.project.id,
@@ -109,7 +111,11 @@ export async function POST(req: Request) {
       });
     }
 
-    return NextResponse.json({ ok: true, sandboxUrl });
+    return NextResponse.json({
+      ok: true,
+      sandboxUrl,
+      pickerReload: pickerStatus.updated,
+    });
   } catch (error) {
     try {
       const projectFragments = await prisma.fragment.findMany({
@@ -152,6 +158,7 @@ export async function POST(req: Request) {
       await sandbox.setTimeout(SANDBOX_TIMEOUT);
 
       const sandboxUrl = managedSandbox.sandboxUrl;
+      const pickerStatus = await ensureSandboxElementPicker(sandbox);
 
       await prisma.fragment.update({
         where: { id: fragment.id },
@@ -171,7 +178,11 @@ export async function POST(req: Request) {
         lastUpdatedAt: fragment.message.project.sandboxUpdatedAt,
       });
 
-      return NextResponse.json({ ok: true, sandboxUrl });
+      return NextResponse.json({
+        ok: true,
+        sandboxUrl,
+        pickerReload: pickerStatus.updated,
+      });
     } catch (fallbackError) {
       return NextResponse.json(
         {

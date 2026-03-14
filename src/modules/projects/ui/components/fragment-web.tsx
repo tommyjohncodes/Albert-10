@@ -55,15 +55,19 @@ export function FragmentWeb({ data }: Props) {
         body: JSON.stringify({ fragmentId: data.id }),
       });
       let nextSandboxUrl: string | null = null;
+      let shouldReload = false;
       try {
         const payload = await res.json();
         nextSandboxUrl =
           typeof payload?.sandboxUrl === "string" ? payload.sandboxUrl : null;
+        shouldReload = Boolean(payload?.pickerReload);
       } catch {
         nextSandboxUrl = null;
       }
       if (nextSandboxUrl && nextSandboxUrl !== currentSandboxUrl) {
         setCurrentSandboxUrl(nextSandboxUrl);
+        setFragmentKey((prev) => prev + 1);
+      } else if (shouldReload) {
         setFragmentKey((prev) => prev + 1);
       }
       return res.ok;

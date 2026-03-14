@@ -153,7 +153,7 @@ export const MessagesContainer = ({
 
                 if (hasNextMessage) {
                   pendingProgress = items;
-                } else {
+                } else if (!hasCompletedRun) {
                   rendered.push(
                     <ProgressGroup
                       key={`progress-${messages[startIndex]?.id ?? startIndex}`}

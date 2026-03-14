@@ -387,18 +387,28 @@ export async function touchProjectSandbox(params: {
 }) {
   const timestamp = new Date();
 
-  await prisma.$transaction(async (tx) => {
-    const project = await tx.project.update({
+  const project = await prisma.project.findUnique({
+    where: { id: params.projectId },
+    select: {
+      userId: true,
+      orgId: true,
+    },
+  });
+
+  if (!project) {
+    throw new Error(`Project ${params.projectId} not found for sandbox touch.`);
+  }
+
+  await withUserSandboxLock(project.userId, async (tx) => {
+    await tx.project.update({
       where: { id: params.projectId },
       data: {
         sandboxId: params.sandboxId,
         sandboxUpdatedAt: timestamp,
       },
-      select: {
-        userId: true,
-        orgId: true,
-      },
     });
+
+    await evictOverflowSandboxes(tx, project.userId, [params.sandboxId]);
 
     await tx.sandboxInstance.upsert({
       where: {

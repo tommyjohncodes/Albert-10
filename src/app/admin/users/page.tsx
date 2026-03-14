@@ -2,8 +2,10 @@
 
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
+import { RefreshCcw } from "lucide-react";
 
 import { useTRPC } from "@/trpc/client";
+import { Button } from "@/components/ui/button";
 
 const formatNumber = (value: number) => new Intl.NumberFormat("en-US").format(value);
 const formatMinutes = (value: number) =>
@@ -11,12 +13,13 @@ const formatMinutes = (value: number) =>
 
 export default function AdminUsersPage() {
   const trpc = useTRPC();
-  const { data, isPending } = useQuery(
+  const query = useQuery(
     trpc.admin.listUsers.queryOptions({
       limit: 100,
       offset: 0,
     })
   );
+  const { data, isPending, isFetching } = query;
 
   if (isPending) {
     return <p className="text-sm text-muted-foreground">Loading users...</p>;
@@ -24,7 +27,18 @@ export default function AdminUsersPage() {
 
   return (
     <section className="space-y-4">
-      <h1 className="text-2xl font-semibold">Users</h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-semibold">Users</h1>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => query.refetch()}
+          disabled={isFetching}
+        >
+          <RefreshCcw className={isFetching ? "animate-spin" : ""} />
+          {isFetching ? "Refreshing..." : "Refresh Active Sandboxes"}
+        </Button>
+      </div>
       <div className="rounded-xl border overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-muted/50">

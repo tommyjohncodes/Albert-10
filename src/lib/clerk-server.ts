@@ -1,5 +1,3 @@
-import "server-only";
-
 import fs from "fs";
 import path from "path";
 import { createClerkClient } from "@clerk/nextjs/server";

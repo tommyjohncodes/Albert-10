@@ -3,7 +3,9 @@ import { initTRPC, TRPCError } from '@trpc/server';
 import { cache } from 'react';
 import superjson from "superjson";
 import { isAdmin } from '@/lib/admin';
+import { getClerkSecretKey } from "@/lib/clerk-server";
 export const createTRPCContext = cache(async () => {
+  getClerkSecretKey();
   return { auth: await auth() };
 });
 export type Context = Awaited<ReturnType<typeof createTRPCContext>>;

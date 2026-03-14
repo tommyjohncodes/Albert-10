@@ -82,7 +82,7 @@ export const HomeSidebar = () => {
   ]);
 
   return (
-    <aside className="hidden md:flex w-72 h-screen fixed left-0 top-0 flex-col border-r bg-background/95 overflow-hidden">
+    <aside className="hidden md:flex w-72 h-screen fixed left-0 top-0 flex-col border-r bg-background/95 overflow-hidden text-[#26251e]">
       <div className="px-6 pt-6 pb-4">
         <Link href="/" className="flex items-center gap-3">
           <Image
@@ -107,8 +107,8 @@ export const HomeSidebar = () => {
               className={cn(
                 "flex items-center gap-3 rounded-2xl px-4 py-3 text-base font-medium transition-colors",
                 isActive
-                  ? "bg-muted text-foreground"
-                  : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                  ? "bg-muted text-[#26251e]"
+                  : "text-[#26251e] hover:bg-muted/60"
               )}
             >
               <Icon className="size-5" />
@@ -118,12 +118,12 @@ export const HomeSidebar = () => {
         })}
       </nav>
       <div className="px-4 pt-4 pb-2">
-        <p className="px-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        <p className="px-2 text-xs font-semibold uppercase tracking-wide text-[#26251e]">
           {sidebarTitle}
         </p>
         <div className="mt-2 space-y-1">
           {sidebarProjects && sidebarProjects.length === 0 && (
-            <p className="px-2 text-xs text-muted-foreground">
+            <p className="px-2 text-xs text-[#26251e]">
               No projects yet
             </p>
           )}
@@ -136,8 +136,8 @@ export const HomeSidebar = () => {
                 className={cn(
                   "flex items-center rounded-xl px-3 py-2 text-sm transition-colors",
                   isActive
-                    ? "bg-muted text-foreground"
-                    : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                    ? "bg-muted text-[#26251e]"
+                    : "text-[#26251e] hover:bg-muted/60",
                 )}
               >
                 <span className="truncate">{project.title}</span>
@@ -147,7 +147,7 @@ export const HomeSidebar = () => {
           {(sidebarProjects?.length ?? 0) > 8 && (
             <Link
               href="/"
-              className="flex items-center px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground"
+              className="flex items-center px-3 py-2 text-xs font-medium text-[#26251e]"
             >
               View all projects
             </Link>
@@ -162,7 +162,7 @@ export const HomeSidebar = () => {
               <Link
                 key={item.label}
                 href={item.href}
-                className="flex items-center gap-3 rounded-2xl px-4 py-3 text-base font-medium text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-colors"
+                className="flex items-center gap-3 rounded-2xl px-4 py-3 text-base font-medium text-[#26251e] hover:bg-muted/60 transition-colors"
               >
                 <Icon className="size-5" />
                 <span>{item.label}</span>
@@ -183,10 +183,10 @@ export const HomeSidebar = () => {
                 }}
               />
               <div className="min-w-0">
-                <p className="text-sm font-medium text-foreground truncate">
+                <p className="text-sm font-medium text-[#26251e] truncate">
                   {user?.fullName ?? "Account"}
                 </p>
-                <p className="text-xs text-muted-foreground truncate">
+                <p className="text-xs text-[#26251e] truncate">
                   {user?.primaryEmailAddress?.emailAddress ?? ""}
                 </p>
               </div>

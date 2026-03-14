@@ -1,10 +1,12 @@
 import Image from "next/image";
 import { format } from "date-fns";
-import { ChevronRightIcon, Code2Icon } from "lucide-react";
+import { CheckCircle2Icon, ChevronRightIcon, Code2Icon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Card } from "@/components/ui/card";
-import { Fragment, MessageRole, MessageType } from "@/generated/prisma";
+import { MessageRole, MessageType } from "@/generated/prisma";
+import { FragmentPreview } from "../types";
+import { ProgressGroup } from "./progress-group";
 
 interface UserMessageProps {
   content: string;
@@ -21,9 +23,9 @@ const UserMessage = ({ content }: UserMessageProps) => {
 }
 
 interface FragmentCardProps {
-  fragment: Fragment;
+  fragment: FragmentPreview;
   isActiveFragment: boolean;
-  onFragmentClick: (fragment: Fragment) => void;
+  onFragmentClick: (fragment: FragmentPreview) => void;
 };
 
 const FragmentCard = ({
@@ -34,21 +36,31 @@ const FragmentCard = ({
   return (
     <button
       className={cn(
-        "flex items-start text-start gap-2 border rounded-lg bg-muted w-fit p-3 hover:bg-secondary transition-colors",
+        "flex items-start text-start gap-1.5 border rounded-md bg-muted w-fit px-2 py-1.5 hover:bg-secondary transition-colors",
         isActiveFragment && 
           "bg-primary text-primary-foreground border-primary hover:bg-primary",
       )}
       onClick={() => onFragmentClick(fragment)}
     >
-      <Code2Icon className="size-4 mt-0.5" />
-      <div className="flex flex-col flex-1">
-        <span className="text-sm font-medium line-clamp-1">
+      <Code2Icon className="size-3.5 mt-0.5" />
+      <div className="flex flex-col flex-1 gap-1">
+        <span className="text-xs font-semibold line-clamp-1">
           {fragment.title}
         </span>
-        <span className="text-sm">Preview</span>
+        <div
+          className={cn(
+            "flex items-center gap-1 text-xs",
+            isActiveFragment
+              ? "text-primary-foreground/80"
+              : "text-emerald-600",
+          )}
+        >
+          <CheckCircle2Icon className="size-3" />
+          <span>Task complete</span>
+        </div>
       </div>
       <div className="flex items-center justify-center mt-0.5">
-        <ChevronRightIcon className="size-4" />
+        <ChevronRightIcon className="size-3.5" />
       </div>
     </button>
   );
@@ -56,11 +68,12 @@ const FragmentCard = ({
 
 interface AssistantMessageProps {
   content: string;
-  fragment: Fragment | null;
+  fragment: FragmentPreview | null;
   createdAt: Date;
   isActiveFragment: boolean;
-  onFragmentClick: (fragment: Fragment) => void;
+  onFragmentClick: (fragment: FragmentPreview) => void;
   type: MessageType;
+  progressItems?: Array<{ id: string; content: string }>;
 };
 
 const AssistantMessage = ({
@@ -70,6 +83,7 @@ const AssistantMessage = ({
   isActiveFragment,
   onFragmentClick,
   type,
+  progressItems,
 }: AssistantMessageProps) => {
   return (
     <div className={cn(
@@ -91,6 +105,13 @@ const AssistantMessage = ({
       </div>
       <div className="pl-8.5 flex flex-col gap-y-4">
         <span>{content}</span>
+        {progressItems && progressItems.length > 0 && (
+          <ProgressGroup
+            items={progressItems}
+            isComplete={true}
+            variant="embedded"
+          />
+        )}
         {fragment && type === "RESULT" && (
           <FragmentCard
             fragment={fragment}
@@ -106,11 +127,12 @@ const AssistantMessage = ({
 interface MessageCardProps {
   content: string;
   role: MessageRole;
-  fragment: Fragment | null;
+  fragment: FragmentPreview | null;
   createdAt: Date;
   isActiveFragment: boolean;
-  onFragmentClick: (fragment: Fragment) => void;
+  onFragmentClick: (fragment: FragmentPreview) => void;
   type: MessageType;
+  progressItems?: Array<{ id: string; content: string }>;
 };
 
 export const MessageCard = ({
@@ -121,6 +143,7 @@ export const MessageCard = ({
   isActiveFragment,
   onFragmentClick,
   type,
+  progressItems,
 }: MessageCardProps) => {
   if (role === "ASSISTANT") {
     return (
@@ -131,6 +154,7 @@ export const MessageCard = ({
         isActiveFragment={isActiveFragment}
         onFragmentClick={onFragmentClick}
         type={type}
+        progressItems={progressItems}
       />
     )
   }

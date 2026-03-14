@@ -20,8 +20,23 @@ export const messagesRouter = createTRPCRouter({
             userId: ctx.auth.userId,
           },
         },
-        include: {
-          fragment: true,
+        select: {
+          id: true,
+          content: true,
+          role: true,
+          type: true,
+          createdAt: true,
+          updatedAt: true,
+          fragment: {
+            select: {
+              id: true,
+              sandboxUrl: true,
+              title: true,
+              summary: true,
+              createdAt: true,
+              updatedAt: true,
+            },
+          },
         },
         orderBy: {
           updatedAt: "asc",
@@ -29,6 +44,35 @@ export const messagesRouter = createTRPCRouter({
       });
 
       return messages;
+    }),
+  getFragmentFiles: protectedProcedure
+    .input(
+      z.object({
+        fragmentId: z.string().min(1, { message: "Fragment ID is required" }),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      const fragment = await prisma.fragment.findFirst({
+        where: {
+          id: input.fragmentId,
+          message: {
+            project: {
+              userId: ctx.auth.userId,
+            },
+          },
+        },
+        select: {
+          id: true,
+          files: true,
+          updatedAt: true,
+        },
+      });
+
+      if (!fragment) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Fragment not found" });
+      }
+
+      return fragment;
     }),
   create: protectedProcedure
     .input(

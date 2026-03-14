@@ -25,6 +25,7 @@ model Project {
   updatedAt DateTime @updatedAt
 
   messages Message[]
+  sandboxInstances SandboxInstance[]
 }
 
 enum MessageRole {
@@ -35,6 +36,13 @@ enum MessageRole {
 enum MessageType {
   RESULT
   ERROR
+  PROGRESS
+}
+
+enum SandboxState {
+  RUNNING
+  TERMINATED
+  FAILED
 }
 
 model Message {
@@ -58,10 +66,30 @@ model Fragment {
 
   sandboxUrl String
   title String
+  summary String?
   files Json
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model SandboxInstance {
+  id String @id @default(uuid())
+  sandboxId String @unique
+  sandboxUrl String?
+  state SandboxState @default(RUNNING)
+  userId String
+  orgId String?
+  projectId String
+  lastActiveAt DateTime @default(now())
+  terminatedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([userId, state, lastActiveAt])
+  @@index([projectId, createdAt])
 }
 
 model Usage {
@@ -91,7 +119,21 @@ model LlmUsage {
   promptTokens Int @default(0)
   completionTokens Int @default(0)
   totalTokens Int @default(0)
+  costUsd Float @default(0)
   createdAt DateTime @default(now())
+}
+
+model SandboxUsage {
+  id String @id @default(uuid())
+  projectId String
+  userId String?
+  orgId String?
+  date DateTime
+  seconds Int @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([projectId, date])
 }
 
 model PlatformSettings {

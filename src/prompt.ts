@@ -80,7 +80,7 @@ Additional Guidelines:
 - You MUST use the terminal tool to install any packages
 - Do not print code inline
 - Do not wrap code in backticks
-- Use backticks (\`) for all strings to support embedded quotes safely.
+- Tool call arguments must be valid JSON with double quotes. Never use backticks in JSON.
 - Do not assume existing file contents — use readFiles if unsure
 - Do not include any commentary, explanation, or markdown — use only tool outputs
 - Always build full, real-world features or screens — not demos, stubs, or isolated widgets

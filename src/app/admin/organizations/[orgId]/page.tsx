@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckIcon, ChevronsUpDownIcon } from "lucide-react";
 
+import { ActiveSandboxesCard } from "@/components/admin/active-sandboxes-card";
 import { UsageCharts } from "@/components/admin/usage-charts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,6 +25,8 @@ import { cn } from "@/lib/utils";
 import { useTRPC } from "@/trpc/client";
 
 const formatNumber = (value: number) => new Intl.NumberFormat("en-US").format(value);
+const formatMinutes = (value: number) =>
+  new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(value);
 
 const fallbackModels = ["z-ai/glm-5", "openai/gpt-4o", "anthropic/claude-3.5-sonnet"];
 
@@ -210,7 +213,7 @@ export default function AdminOrganizationDetailPage() {
         </Button>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-4">
         <div className="rounded-xl border p-4">
           <p className="text-xs text-muted-foreground">Total tokens</p>
           <p className="text-2xl font-semibold">{formatNumber(data.usage.totals.totalTokens)}</p>
@@ -223,7 +226,13 @@ export default function AdminOrganizationDetailPage() {
           <p className="text-xs text-muted-foreground">Completion tokens</p>
           <p className="text-2xl font-semibold">{formatNumber(data.usage.totals.completionTokens)}</p>
         </div>
+        <div className="rounded-xl border p-4">
+          <p className="text-xs text-muted-foreground">Sandbox minutes</p>
+          <p className="text-2xl font-semibold">{formatMinutes(data.sandboxUsage.totals.totalMinutes)}</p>
+        </div>
       </div>
+
+      <ActiveSandboxesCard items={data.activeSandboxes} />
 
       <UsageCharts
         daily={data.usage.daily}

@@ -6,6 +6,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useTRPC } from "@/trpc/client";
 
 const formatNumber = (value: number) => new Intl.NumberFormat("en-US").format(value);
+const formatMinutes = (value: number) =>
+  new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(value);
 
 export default function AdminOrganizationsPage() {
   const trpc = useTRPC();
@@ -29,9 +31,11 @@ export default function AdminOrganizationsPage() {
             <tr>
               <th className="px-3 py-2 text-left">Name</th>
               <th className="px-3 py-2 text-left">Members</th>
+              <th className="px-3 py-2 text-left">Active Sandboxes</th>
               <th className="px-3 py-2 text-left">Provider / Model</th>
               <th className="px-3 py-2 text-left">OpenRouter Key</th>
               <th className="px-3 py-2 text-left">Total Tokens</th>
+              <th className="px-3 py-2 text-left">Sandbox Minutes</th>
             </tr>
           </thead>
           <tbody>
@@ -43,11 +47,13 @@ export default function AdminOrganizationsPage() {
                   </Link>
                 </td>
                 <td className="px-3 py-2">{org.membersCount}</td>
+                <td className="px-3 py-2">{formatNumber(org.activeSandboxes)}</td>
                 <td className="px-3 py-2">
                   {org.provider ? `${org.provider} / ${org.model}` : "Not configured"}
                 </td>
                 <td className="px-3 py-2">{org.hasOpenRouterKey ? "Configured" : "Not set"}</td>
                 <td className="px-3 py-2">{formatNumber(org.usage.totalTokens)}</td>
+                <td className="px-3 py-2">{formatMinutes(org.sandboxUsage.totalMinutes)}</td>
               </tr>
             ))}
           </tbody>

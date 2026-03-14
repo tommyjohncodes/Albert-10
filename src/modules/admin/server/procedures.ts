@@ -1,17 +1,12 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { createClerkClient } from "@clerk/nextjs/server";
-
 import { prisma } from "@/lib/db";
+import { SandboxState } from "@/generated/prisma";
+import { getClerkClient } from "@/lib/clerk-server";
 
-function getClerkClient() {
-  const secretKey = process.env.CLERK_SECRET_KEY;
-  if (!secretKey) {
-    throw new Error("CLERK_SECRET_KEY is required for admin Clerk Backend API");
-  }
-  return createClerkClient({ secretKey });
-}
 import { aggregateUsage } from "@/lib/llm-usage";
+import { aggregateSandboxUsage } from "@/lib/sandbox-usage";
+import { getUserUsageMetrics } from "@/lib/user-usage-metrics";
 import { decryptSecret, encryptSecret, hasEncryptionKey } from "@/lib/secrets";
 import { getPlatformSettings, upsertPlatformVercelToken } from "@/lib/platform-settings";
 import { adminProcedure, createTRPCRouter } from "@/trpc/init";
@@ -45,6 +40,119 @@ function getDisplayName(params: {
 }) {
   const name = [params.firstName, params.lastName].filter(Boolean).join(" ").trim();
   return name || params.email || "Unknown";
+}
+
+const activeSandboxSelect = {
+  sandboxId: true,
+  sandboxUrl: true,
+  lastActiveAt: true,
+  createdAt: true,
+  projectId: true,
+  project: {
+    select: {
+      name: true,
+    },
+  },
+} as const;
+
+async function getFallbackOrgIds() {
+  const [projectOrgIds, usageOrgIds, sandboxUsageOrgIds, sandboxInstanceOrgIds] =
+    await Promise.all([
+      prisma.project.findMany({
+        where: { orgId: { not: null } },
+        distinct: ["orgId"],
+        select: { orgId: true },
+      }),
+      prisma.llmUsage.findMany({
+        where: { orgId: { not: null } },
+        distinct: ["orgId"],
+        select: { orgId: true },
+      }),
+      prisma.sandboxUsage.findMany({
+        where: { orgId: { not: null } },
+        distinct: ["orgId"],
+        select: { orgId: true },
+      }),
+      prisma.sandboxInstance.findMany({
+        where: { orgId: { not: null } },
+        distinct: ["orgId"],
+        select: { orgId: true },
+      }),
+    ]);
+
+  const orgIds = new Set<string>();
+  for (const row of [
+    ...projectOrgIds,
+    ...usageOrgIds,
+    ...sandboxUsageOrgIds,
+    ...sandboxInstanceOrgIds,
+  ]) {
+    if (row.orgId) {
+      orgIds.add(row.orgId);
+    }
+  }
+
+  return Array.from(orgIds);
+}
+
+async function getFallbackUserIds() {
+  const [projectUserIds, usageUserIds, sandboxUsageUserIds, sandboxInstanceUserIds] =
+    await Promise.all([
+      prisma.project.findMany({
+        distinct: ["userId"],
+        select: { userId: true },
+      }),
+      prisma.llmUsage.findMany({
+        where: { userId: { not: null } },
+        distinct: ["userId"],
+        select: { userId: true },
+      }),
+      prisma.sandboxUsage.findMany({
+        where: { userId: { not: null } },
+        distinct: ["userId"],
+        select: { userId: true },
+      }),
+      prisma.sandboxInstance.findMany({
+        distinct: ["userId"],
+        select: { userId: true },
+      }),
+    ]);
+
+  const userIds = new Set<string>();
+  for (const row of [
+    ...projectUserIds,
+    ...usageUserIds,
+    ...sandboxUsageUserIds,
+    ...sandboxInstanceUserIds,
+  ]) {
+    if (row.userId) {
+      userIds.add(row.userId);
+    }
+  }
+
+  return Array.from(userIds);
+}
+
+function serializeActiveSandboxes(
+  rows: Array<{
+    sandboxId: string;
+    sandboxUrl: string | null;
+    lastActiveAt: Date;
+    createdAt: Date;
+    projectId: string;
+    project: {
+      name: string;
+    };
+  }>,
+) {
+  return rows.map((row) => ({
+    sandboxId: row.sandboxId,
+    sandboxUrl: row.sandboxUrl,
+    projectId: row.projectId,
+    projectName: row.project.name,
+    lastActiveAt: row.lastActiveAt.toISOString(),
+    createdAt: row.createdAt.toISOString(),
+  }));
 }
 
 export const adminRouter = createTRPCRouter({
@@ -101,15 +209,43 @@ export const adminRouter = createTRPCRouter({
   listOrganizations: adminProcedure
     .input(ListInputSchema)
     .query(async ({ input }) => {
-      const client = getClerkClient();
-      const organizationsResponse = await client.organizations.getOrganizationList({
-        limit: input?.limit ?? 100,
-        offset: input?.offset ?? 0,
-        includeMembersCount: true,
-      });
+      let organizations: Array<{
+        id: string;
+        name: string;
+        slug: string | null;
+        membersCount: number;
+      }> = [];
 
-      const orgIds = organizationsResponse.data.map((org) => org.id);
-      const [settings, usageRows] = await Promise.all([
+      try {
+        const client = getClerkClient();
+        const organizationsResponse = await client.organizations.getOrganizationList({
+          limit: input?.limit ?? 100,
+          offset: input?.offset ?? 0,
+          includeMembersCount: true,
+        });
+
+        organizations = organizationsResponse.data.map((org) => ({
+          id: org.id,
+          name: org.name,
+          slug: org.slug ?? null,
+          membersCount: org.membersCount ?? 0,
+        }));
+      } catch {
+        const fallbackOrgIds = await getFallbackOrgIds();
+        const offset = input?.offset ?? 0;
+        const limit = input?.limit ?? fallbackOrgIds.length;
+        const pagedOrgIds = fallbackOrgIds.slice(offset, offset + limit);
+
+        organizations = pagedOrgIds.map((orgId) => ({
+          id: orgId,
+          name: orgId,
+          slug: null,
+          membersCount: 0,
+        }));
+      }
+
+      const orgIds = organizations.map((org) => org.id);
+      const [settings, usageRows, sandboxUsageRows, activeSandboxRows] = await Promise.all([
         prisma.orgLlmSettings.findMany({
           where: {
             orgId: {
@@ -124,10 +260,39 @@ export const adminRouter = createTRPCRouter({
             },
           },
         }),
+        prisma.sandboxUsage.findMany({
+          where: {
+            orgId: {
+              in: orgIds,
+            },
+          },
+        }),
+        prisma.sandboxInstance.findMany({
+          where: {
+            orgId: {
+              in: orgIds,
+            },
+            state: SandboxState.RUNNING,
+          },
+          select: {
+            orgId: true,
+          },
+        }),
       ]);
 
       const settingsMap = new Map(settings.map((item) => [item.orgId, item]));
       const usageByOrg = new Map<string, ReturnType<typeof aggregateUsage>>();
+      const sandboxUsageByOrg = new Map<string, ReturnType<typeof aggregateSandboxUsage>>();
+      const activeSandboxCountByOrg = new Map<string, number>();
+
+      for (const row of activeSandboxRows) {
+        if (!row.orgId) continue;
+        activeSandboxCountByOrg.set(
+          row.orgId,
+          (activeSandboxCountByOrg.get(row.orgId) ?? 0) + 1,
+        );
+      }
+
       for (const orgId of orgIds) {
         const rows = usageRows.filter((row) => row.orgId === orgId);
         usageByOrg.set(
@@ -143,11 +308,15 @@ export const adminRouter = createTRPCRouter({
             }))
           )
         );
+
+        const sandboxRows = sandboxUsageRows.filter((row) => row.orgId === orgId);
+        sandboxUsageByOrg.set(orgId, aggregateSandboxUsage(sandboxRows));
       }
 
-      return organizationsResponse.data.map((org) => {
+      return organizations.map((org) => {
         const setting = settingsMap.get(org.id);
         const usage = usageByOrg.get(org.id);
+        const sandboxUsage = sandboxUsageByOrg.get(org.id);
 
         return {
           id: org.id,
@@ -163,6 +332,12 @@ export const adminRouter = createTRPCRouter({
             totalTokens: 0,
             lastUsedAt: null,
           },
+          sandboxUsage: sandboxUsage?.totals ?? {
+            totalSeconds: 0,
+            totalMinutes: 0,
+            lastUsedAt: null,
+          },
+          activeSandboxes: activeSandboxCountByOrg.get(org.id) ?? 0,
         };
       });
     }),
@@ -174,21 +349,73 @@ export const adminRouter = createTRPCRouter({
       })
     )
     .query(async ({ input }) => {
-      const client = getClerkClient();
-      const [organization, settings, memberships, usageRows] = await Promise.all([
-        client.organizations.getOrganization({ organizationId: input.orgId, includeMembersCount: true }),
+      const [settings, usageRows, sandboxUsageRows, activeSandboxRows] = await Promise.all([
         prisma.orgLlmSettings.findUnique({
           where: { orgId: input.orgId },
-        }),
-        client.organizations.getOrganizationMembershipList({
-          organizationId: input.orgId,
-          limit: 100,
-          offset: 0,
         }),
         prisma.llmUsage.findMany({
           where: { orgId: input.orgId },
         }),
+        prisma.sandboxUsage.findMany({
+          where: { orgId: input.orgId },
+        }),
+        prisma.sandboxInstance.findMany({
+          where: {
+            orgId: input.orgId,
+            state: SandboxState.RUNNING,
+          },
+          orderBy: [
+            { lastActiveAt: "desc" },
+            { createdAt: "desc" },
+          ],
+          select: activeSandboxSelect,
+        }),
       ]);
+
+      let organization = {
+        id: input.orgId,
+        name: input.orgId,
+        slug: null as string | null,
+        membersCount: 0,
+      };
+      let members: Array<{
+        id: string;
+        firstName: string | null;
+        lastName: string | null;
+        identifier: string | null;
+        role: string;
+      }> = [];
+
+      try {
+        const client = getClerkClient();
+        const [organizationResponse, memberships] = await Promise.all([
+          client.organizations.getOrganization({
+            organizationId: input.orgId,
+            includeMembersCount: true,
+          }),
+          client.organizations.getOrganizationMembershipList({
+            organizationId: input.orgId,
+            limit: 100,
+            offset: 0,
+          }),
+        ]);
+
+        organization = {
+          id: organizationResponse.id,
+          name: organizationResponse.name,
+          slug: organizationResponse.slug ?? null,
+          membersCount: organizationResponse.membersCount ?? 0,
+        };
+        members = memberships.data.map((membership) => ({
+          id: membership.publicUserData?.userId ?? "",
+          firstName: membership.publicUserData?.firstName ?? null,
+          lastName: membership.publicUserData?.lastName ?? null,
+          identifier: membership.publicUserData?.identifier ?? null,
+          role: membership.role,
+        }));
+      } catch {
+        members = [];
+      }
 
       const usage = aggregateUsage(
         usageRows.map((row) => ({
@@ -201,6 +428,7 @@ export const adminRouter = createTRPCRouter({
         })),
         { days: 30 }
       );
+      const sandboxUsage = aggregateSandboxUsage(sandboxUsageRows);
 
       return {
         organization: {
@@ -217,14 +445,10 @@ export const adminRouter = createTRPCRouter({
           hasOpenRouterKey: Boolean(settings?.openrouterApiKey),
           openrouterKeyUpdatedAt: settings?.openrouterKeyUpdatedAt?.toISOString() ?? null,
         },
-        members: memberships.data.map((membership) => ({
-          id: membership.publicUserData?.userId ?? "",
-          firstName: membership.publicUserData?.firstName ?? null,
-          lastName: membership.publicUserData?.lastName ?? null,
-          identifier: membership.publicUserData?.identifier ?? null,
-          role: membership.role,
-        })),
+        members,
         usage,
+        sandboxUsage,
+        activeSandboxes: serializeActiveSandboxes(activeSandboxRows),
       };
     }),
 
@@ -280,22 +504,80 @@ export const adminRouter = createTRPCRouter({
   listUsers: adminProcedure
     .input(ListInputSchema)
     .query(async ({ input }) => {
-      const client = getClerkClient();
-      const usersResponse = await client.users.getUserList({
-        limit: input?.limit ?? 100,
-        offset: input?.offset ?? 0,
-      });
+      let users: Array<{
+        id: string;
+        firstName: string | null;
+        lastName: string | null;
+        email: string | null;
+      }> = [];
 
-      const userIds = usersResponse.data.map((user) => user.id);
-      const usageRows = await prisma.llmUsage.findMany({
-        where: {
-          userId: {
-            in: userIds,
+      try {
+        const client = getClerkClient();
+        const usersResponse = await client.users.getUserList({
+          limit: input?.limit ?? 100,
+          offset: input?.offset ?? 0,
+        });
+
+        users = usersResponse.data.map((user) => ({
+          id: user.id,
+          firstName: user.firstName ?? null,
+          lastName: user.lastName ?? null,
+          email: user.primaryEmailAddress?.emailAddress ?? null,
+        }));
+      } catch {
+        const fallbackUserIds = await getFallbackUserIds();
+        const offset = input?.offset ?? 0;
+        const limit = input?.limit ?? fallbackUserIds.length;
+        const pagedUserIds = fallbackUserIds.slice(offset, offset + limit);
+
+        users = pagedUserIds.map((userId) => ({
+          id: userId,
+          firstName: null,
+          lastName: null,
+          email: null,
+        }));
+      }
+
+      const userIds = users.map((user) => user.id);
+      const [usageRows, sandboxUsageRows, activeSandboxRows] = await Promise.all([
+        prisma.llmUsage.findMany({
+          where: {
+            userId: {
+              in: userIds,
+            },
           },
-        },
-      });
+        }),
+        prisma.sandboxUsage.findMany({
+          where: {
+            userId: {
+              in: userIds,
+            },
+          },
+        }),
+        prisma.sandboxInstance.findMany({
+          where: {
+            userId: {
+              in: userIds,
+            },
+            state: SandboxState.RUNNING,
+          },
+          select: {
+            userId: true,
+          },
+        }),
+      ]);
 
       const usageByUser = new Map<string, ReturnType<typeof aggregateUsage>>();
+      const sandboxUsageByUser = new Map<string, ReturnType<typeof aggregateSandboxUsage>>();
+      const activeSandboxCountByUser = new Map<string, number>();
+
+      for (const row of activeSandboxRows) {
+        activeSandboxCountByUser.set(
+          row.userId,
+          (activeSandboxCountByUser.get(row.userId) ?? 0) + 1,
+        );
+      }
+
       for (const userId of userIds) {
         const rows = usageRows.filter((row) => row.userId === userId);
         usageByUser.set(
@@ -311,21 +593,24 @@ export const adminRouter = createTRPCRouter({
             }))
           )
         );
+
+        const sandboxRows = sandboxUsageRows.filter((row) => row.userId === userId);
+        sandboxUsageByUser.set(userId, aggregateSandboxUsage(sandboxRows));
       }
 
-      return usersResponse.data.map((user) => {
-        const primaryEmail = user.primaryEmailAddress?.emailAddress ?? null;
+      return users.map((user) => {
         const usage = usageByUser.get(user.id);
+        const sandboxUsage = sandboxUsageByUser.get(user.id);
 
         return {
           id: user.id,
           firstName: user.firstName,
           lastName: user.lastName,
-          email: primaryEmail,
+          email: user.email,
           name: getDisplayName({
             firstName: user.firstName,
             lastName: user.lastName,
-            email: primaryEmail,
+            email: user.email,
           }),
           usage: usage?.totals ?? {
             promptTokens: 0,
@@ -333,6 +618,12 @@ export const adminRouter = createTRPCRouter({
             totalTokens: 0,
             lastUsedAt: null,
           },
+          sandboxUsage: sandboxUsage?.totals ?? {
+            totalSeconds: 0,
+            totalMinutes: 0,
+            lastUsedAt: null,
+          },
+          activeSandboxes: activeSandboxCountByUser.get(user.id) ?? 0,
         };
       });
     }),
@@ -344,20 +635,62 @@ export const adminRouter = createTRPCRouter({
       })
     )
     .query(async ({ input }) => {
-      const client = getClerkClient();
-      const [user, membershipsResponse, usageRows] = await Promise.all([
-        client.users.getUser(input.userId),
-        client.users.getOrganizationMembershipList({
-          userId: input.userId,
-          limit: 100,
-          offset: 0,
-        }),
+      const [usageRows, activeSandboxRows] = await Promise.all([
         prisma.llmUsage.findMany({
           where: {
             userId: input.userId,
           },
         }),
+        prisma.sandboxInstance.findMany({
+          where: {
+            userId: input.userId,
+            state: SandboxState.RUNNING,
+          },
+          orderBy: [
+            { lastActiveAt: "desc" },
+            { createdAt: "desc" },
+          ],
+          select: activeSandboxSelect,
+        }),
       ]);
+
+      let user = {
+        id: input.userId,
+        firstName: null as string | null,
+        lastName: null as string | null,
+        email: null as string | null,
+      };
+      let memberships: Array<{
+        organizationId: string;
+        organizationName: string;
+        role: string;
+      }> = [];
+
+      try {
+        const client = getClerkClient();
+        const [userResponse, membershipsResponse] = await Promise.all([
+          client.users.getUser(input.userId),
+          client.users.getOrganizationMembershipList({
+            userId: input.userId,
+            limit: 100,
+            offset: 0,
+          }),
+        ]);
+
+        user = {
+          id: userResponse.id,
+          firstName: userResponse.firstName ?? null,
+          lastName: userResponse.lastName ?? null,
+          email: userResponse.primaryEmailAddress?.emailAddress ?? null,
+        };
+        memberships = membershipsResponse.data.map((membership) => ({
+          organizationId: membership.organization.id,
+          organizationName: membership.organization.name,
+          role: membership.role,
+        }));
+      } catch {
+        memberships = [];
+      }
 
       const usage = aggregateUsage(
         usageRows.map((row) => ({
@@ -370,20 +703,14 @@ export const adminRouter = createTRPCRouter({
         })),
         { days: 30 }
       );
+      const { sandboxUsage } = await getUserUsageMetrics(input.userId);
 
       return {
-        user: {
-          id: user.id,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          email: user.primaryEmailAddress?.emailAddress ?? null,
-        },
-        memberships: membershipsResponse.data.map((membership) => ({
-          organizationId: membership.organization.id,
-          organizationName: membership.organization.name,
-          role: membership.role,
-        })),
+        user,
+        memberships,
         usage,
+        sandboxUsage,
+        activeSandboxes: serializeActiveSandboxes(activeSandboxRows),
       };
     }),
 

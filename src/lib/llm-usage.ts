@@ -10,6 +10,7 @@ export type LlmUsageInput = {
   promptTokens?: number | null;
   completionTokens?: number | null;
   totalTokens?: number | null;
+  costUsd?: number | null;
 };
 
 export type UsageTotals = {
@@ -117,6 +118,7 @@ export async function recordLlmUsage(input: LlmUsageInput) {
   const promptTokens = input.promptTokens ?? 0;
   const completionTokens = input.completionTokens ?? 0;
   const totalTokens = input.totalTokens ?? promptTokens + completionTokens;
+  const costUsd = input.costUsd ?? 0;
 
   await prisma.llmUsage.create({
     data: {
@@ -127,6 +129,7 @@ export async function recordLlmUsage(input: LlmUsageInput) {
       promptTokens,
       completionTokens,
       totalTokens,
+      costUsd,
     },
   });
 }

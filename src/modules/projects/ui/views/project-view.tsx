@@ -2,8 +2,8 @@
 
 import { Suspense, useState } from "react";
 import { EyeIcon, CodeIcon } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 
-import { Fragment } from "@/generated/prisma";
 import { UserControl } from "@/components/user-control";
 import { FileExplorer } from "@/components/file-explorer";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -12,19 +12,30 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
+import { useTRPC } from "@/trpc/client";
 
 import { FragmentWeb } from "../components/fragment-web";
 import { ProjectHeader } from "../components/project-header";
 import { MessagesContainer } from "../components/messages-container";
 import { ErrorBoundary } from "react-error-boundary";
+import { FragmentPreview } from "../types";
 
 interface Props {
   projectId: string;
 };
 
 export const ProjectView = ({ projectId }: Props) => {
-  const [activeFragment, setActiveFragment] = useState<Fragment | null>(null);
+  const trpc = useTRPC();
+  const [activeFragment, setActiveFragment] = useState<FragmentPreview | null>(null);
   const [tabState, setTabState] = useState<"preview" | "code">("preview");
+  const fragmentFilesQuery = useQuery(
+    trpc.messages.getFragmentFiles.queryOptions(
+      { fragmentId: activeFragment?.id ?? "" },
+      {
+        enabled: tabState === "code" && Boolean(activeFragment?.id),
+      },
+    ),
+  );
 
   return (
     <div className="h-screen">
@@ -77,9 +88,14 @@ export const ProjectView = ({ projectId }: Props) => {
               {!!activeFragment && <FragmentWeb data={activeFragment} />}
             </TabsContent>
             <TabsContent value="code" className="min-h-0">
-              {!!activeFragment?.files && (
+              {fragmentFilesQuery.isPending && (
+                <div className="p-4 text-sm text-muted-foreground">
+                  Loading files...
+                </div>
+              )}
+              {!!fragmentFilesQuery.data?.files && (
                 <FileExplorer
-                  files={activeFragment.files as { [path: string]: string }}
+                  files={fragmentFilesQuery.data.files as { [path: string]: string }}
                 />
               )}
             </TabsContent>

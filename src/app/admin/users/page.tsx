@@ -6,6 +6,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useTRPC } from "@/trpc/client";
 
 const formatNumber = (value: number) => new Intl.NumberFormat("en-US").format(value);
+const formatMinutes = (value: number) =>
+  new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(value);
 
 export default function AdminUsersPage() {
   const trpc = useTRPC();
@@ -30,7 +32,9 @@ export default function AdminUsersPage() {
               <th className="px-3 py-2 text-left">User</th>
               <th className="px-3 py-2 text-left">Email</th>
               <th className="px-3 py-2 text-left">User ID</th>
+              <th className="px-3 py-2 text-left">Active Sandboxes</th>
               <th className="px-3 py-2 text-left">Total Tokens</th>
+              <th className="px-3 py-2 text-left">Sandbox Minutes</th>
             </tr>
           </thead>
           <tbody>
@@ -43,7 +47,9 @@ export default function AdminUsersPage() {
                 </td>
                 <td className="px-3 py-2">{user.email ?? "—"}</td>
                 <td className="px-3 py-2 font-mono text-xs">{user.id}</td>
+                <td className="px-3 py-2">{formatNumber(user.activeSandboxes)}</td>
                 <td className="px-3 py-2">{formatNumber(user.usage.totalTokens)}</td>
+                <td className="px-3 py-2">{formatMinutes(user.sandboxUsage.totalMinutes)}</td>
               </tr>
             ))}
           </tbody>

@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "LlmUsage" ADD COLUMN     "costUsd" DOUBLE PRECISION NOT NULL DEFAULT 0;

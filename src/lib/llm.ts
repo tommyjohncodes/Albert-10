@@ -12,6 +12,7 @@ export interface LlmConfig {
   codeModel: string;
   titleModel: string;
   responseModel: string;
+  fallbackCodeModel: string;
 }
 
 const OPENROUTER_BASE_URL_DEFAULT = "https://openrouter.ai/api/v1/";
@@ -39,11 +40,13 @@ const DEFAULT_MODELS: Record<LlmProvider, Omit<LlmConfig, "provider">> = {
     codeModel: "gpt-4.1",
     titleModel: "gpt-4o",
     responseModel: "gpt-4o",
+    fallbackCodeModel: "gpt-4.1",
   },
   openrouter: {
     codeModel: "z-ai/glm-5",
     titleModel: "z-ai/glm-5",
     responseModel: "z-ai/glm-5",
+    fallbackCodeModel: "openai/gpt-4o",
   },
 };
 
@@ -97,11 +100,17 @@ export async function resolveLlmConfig(orgId?: string | null): Promise<LlmConfig
     defaults.responseModel ??
     codeModel;
 
+  const fallbackCodeModel =
+    process.env.LLM_CODE_FALLBACK_MODEL ??
+    defaults.fallbackCodeModel ??
+    codeModel;
+
   return {
     provider,
     codeModel,
     titleModel,
     responseModel,
+    fallbackCodeModel,
   };
 }
 
@@ -179,12 +188,18 @@ export async function getLlmModels(orgId?: string | null) {
     ),
   };
 
+  const fallbackCodeModelName =
+    config.fallbackCodeModel && config.fallbackCodeModel !== config.codeModel
+      ? config.fallbackCodeModel
+      : null;
+
   return {
     provider: config.provider,
     modelNames: {
       code: config.codeModel,
       title: config.titleModel,
       response: config.responseModel,
+      codeFallback: fallbackCodeModelName,
     },
     code: buildModel(config.provider, config.codeModel, orgOpenRouterApiKey, {
       temperature: 0.1,
@@ -196,5 +211,11 @@ export async function getLlmModels(orgId?: string | null) {
     response: buildModel(config.provider, config.responseModel, orgOpenRouterApiKey, {
       max_tokens: maxTokens.response,
     }),
+    codeFallback: fallbackCodeModelName
+      ? buildModel(config.provider, fallbackCodeModelName, orgOpenRouterApiKey, {
+          temperature: 0.1,
+          max_tokens: maxTokens.code,
+        })
+      : null,
   };
 }

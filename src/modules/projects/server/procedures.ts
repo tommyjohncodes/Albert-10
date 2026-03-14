@@ -2,18 +2,11 @@ import { z } from "zod";
 import { generateSlug } from "random-word-slugs";
 
 import { prisma } from "@/lib/db";
+import { terminateProjectSandboxes } from "@/lib/sandbox-instance";
 import { TRPCError } from "@trpc/server";
 import { inngest } from "@/inngest/client";
 import { protectedProcedure, createTRPCRouter } from "@/trpc/init";
-import { createClerkClient } from "@clerk/nextjs/server";
-
-const getClerkClient = () => {
-  const secretKey = process.env.CLERK_SECRET_KEY;
-  if (!secretKey) {
-    return null;
-  }
-  return createClerkClient({ secretKey });
-};
+import { getClerkClient } from "@/lib/clerk-server";
 
 const resolveOrgIdForUser = async (
   userId: string,
@@ -62,7 +55,7 @@ export const projectsRouter = createTRPCRouter({
               fragment: { isNot: null },
             },
             orderBy: {
-              createdAt: "desc",
+              createdAt: "asc",
             },
             take: 1,
             select: {
@@ -114,7 +107,7 @@ export const projectsRouter = createTRPCRouter({
               fragment: { isNot: null },
             },
             orderBy: {
-              createdAt: "desc",
+              createdAt: "asc",
             },
             take: 1,
             select: {
@@ -154,7 +147,7 @@ export const projectsRouter = createTRPCRouter({
               fragment: { isNot: null },
             },
             orderBy: {
-              createdAt: "desc",
+              createdAt: "asc",
             },
             take: 1,
             select: {
@@ -233,6 +226,8 @@ export const projectsRouter = createTRPCRouter({
       if (!existingProject) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
       }
+
+      await terminateProjectSandboxes(input.id);
 
       await prisma.project.delete({
         where: { id: input.id },

@@ -1,12 +1,12 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ExternalLinkIcon, RefreshCcwIcon } from "lucide-react";
 
 import { Hint } from "@/components/hint";
-import { Fragment } from "@/generated/prisma";
+import { FragmentPreview } from "../types";
 import { Button } from "@/components/ui/button";
 
 interface Props {
-  data: Fragment;
+  data: FragmentPreview;
 };
 
 const HEARTBEAT_INTERVAL_MS = 60_000;
@@ -14,39 +14,73 @@ const HEARTBEAT_INTERVAL_MS = 60_000;
 export function FragmentWeb({ data }: Props) {
   const [copied, setCopied] = useState(false);
   const [fragmentKey, setFragmentKey] = useState(0);
+  const [currentSandboxUrl, setCurrentSandboxUrl] = useState<string | null>(
+    data?.sandboxUrl ?? null,
+  );
+  const lastWakeAtRef = useRef(0);
 
   useEffect(() => {
-    if (!data?.id || !data?.sandboxUrl) return;
+    setCurrentSandboxUrl(data?.sandboxUrl ?? null);
+  }, [data?.sandboxUrl]);
+
+  const wakeSandbox = useCallback(async (force = false) => {
+    if (!data?.id || !data?.sandboxUrl) return false;
+    const now = Date.now();
+    if (!force && now - lastWakeAtRef.current < 5000) return true;
+    lastWakeAtRef.current = now;
+    try {
+      const res = await fetch("/api/sandbox/heartbeat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fragmentId: data.id }),
+      });
+      let nextSandboxUrl: string | null = null;
+      try {
+        const payload = await res.json();
+        nextSandboxUrl =
+          typeof payload?.sandboxUrl === "string" ? payload.sandboxUrl : null;
+      } catch {
+        nextSandboxUrl = null;
+      }
+      if (nextSandboxUrl && nextSandboxUrl !== currentSandboxUrl) {
+        setCurrentSandboxUrl(nextSandboxUrl);
+        setFragmentKey((prev) => prev + 1);
+      }
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }, [data?.id, data?.sandboxUrl, currentSandboxUrl]);
+
+  useEffect(() => {
+    if (!data?.id || !data?.sandboxUrl) {
+      return;
+    }
     let isActive = true;
 
     const sendHeartbeat = async () => {
       if (!isActive) return;
-      try {
-        await fetch("/api/sandbox/heartbeat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ fragmentId: data.id }),
-        });
-      } catch {
-        // Best-effort heartbeat; ignore failures.
-      }
+      await wakeSandbox();
     };
 
-    void sendHeartbeat();
+    void wakeSandbox(true).then(() => {});
     const interval = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
 
     return () => {
       isActive = false;
       clearInterval(interval);
     };
-  }, [data?.id, data?.sandboxUrl]);
+  }, [data?.id, data?.sandboxUrl, wakeSandbox]);
 
-  const onRefresh = () => {
+  const onRefresh = async () => {
+    await wakeSandbox(true);
     setFragmentKey((prev) => prev + 1);
   };
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(data.sandboxUrl);
+    if (currentSandboxUrl) {
+      navigator.clipboard.writeText(currentSandboxUrl);
+    }
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -64,35 +98,39 @@ export function FragmentWeb({ data }: Props) {
             size="sm" 
             variant="outline" 
             onClick={handleCopy}
-            disabled={!data.sandboxUrl || copied}
+            disabled={!currentSandboxUrl || copied}
             className="flex-1 justify-start text-start font-normal"
           >
             <span className="truncate">
-              {data.sandboxUrl}
+              {currentSandboxUrl ?? ""}
             </span>
           </Button>
         </Hint>
         <Hint text="Open in a new tab" side="bottom" align="start">
           <Button
             size="sm"
-            disabled={!data.sandboxUrl}
+            disabled={!currentSandboxUrl}
             variant="outline"
             onClick={() => {
-              if (!data.sandboxUrl) return;
-              window.open(data.sandboxUrl, "_blank");
+              if (!currentSandboxUrl) return;
+              window.open(currentSandboxUrl, "_blank");
             }}
           >
             <ExternalLinkIcon />
           </Button>
         </Hint>
       </div>
-      <iframe
-        key={fragmentKey}
-        className="h-full w-full"
-        sandbox="allow-forms allow-scripts allow-same-origin"
-        loading="lazy"
-        src={data.sandboxUrl}
-      />
+      <div className="relative flex-1">
+        <iframe
+          key={fragmentKey}
+          className="h-full w-full"
+          sandbox="allow-forms allow-scripts allow-same-origin"
+          loading="lazy"
+          src={currentSandboxUrl ?? undefined}
+          onPointerDown={() => wakeSandbox()}
+          onFocus={() => wakeSandbox()}
+        />
+      </div>
     </div>
   )
 };

@@ -4,10 +4,13 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 
+import { ActiveSandboxesCard } from "@/components/admin/active-sandboxes-card";
 import { UsageCharts } from "@/components/admin/usage-charts";
 import { useTRPC } from "@/trpc/client";
 
 const formatNumber = (value: number) => new Intl.NumberFormat("en-US").format(value);
+const formatMinutes = (value: number) =>
+  new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(value);
 
 export default function AdminUserDetailPage() {
   const params = useParams<{ userId: string }>();
@@ -39,7 +42,7 @@ export default function AdminUserDetailPage() {
         <p className="text-sm text-muted-foreground">{data.user.email ?? data.user.id}</p>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-4">
         <div className="rounded-xl border p-4">
           <p className="text-xs text-muted-foreground">Total tokens</p>
           <p className="text-2xl font-semibold">{formatNumber(data.usage.totals.totalTokens)}</p>
@@ -52,7 +55,13 @@ export default function AdminUserDetailPage() {
           <p className="text-xs text-muted-foreground">Completion tokens</p>
           <p className="text-2xl font-semibold">{formatNumber(data.usage.totals.completionTokens)}</p>
         </div>
+        <div className="rounded-xl border p-4">
+          <p className="text-xs text-muted-foreground">Sandbox minutes</p>
+          <p className="text-2xl font-semibold">{formatMinutes(data.sandboxUsage.totals.totalMinutes)}</p>
+        </div>
       </div>
+
+      <ActiveSandboxesCard items={data.activeSandboxes} />
 
       <UsageCharts
         daily={data.usage.daily}

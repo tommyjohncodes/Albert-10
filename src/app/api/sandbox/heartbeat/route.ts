@@ -3,7 +3,16 @@ import { auth } from "@clerk/nextjs/server";
 import { Sandbox } from "@e2b/code-interpreter";
 
 import { prisma } from "@/lib/db";
+import {
+  ensureProjectSandbox,
+  touchProjectSandbox,
+} from "@/lib/sandbox-instance";
+import {
+  ensureSandboxPreviewReady,
+  SANDBOX_PREVIEW_PORT,
+} from "@/lib/sandbox-preview";
 import { SANDBOX_TIMEOUT } from "@/inngest/types";
+import { recordSandboxUsage } from "@/lib/sandbox-usage";
 
 const extractSandboxId = (sandboxUrl: string) => {
   try {
@@ -40,13 +49,17 @@ export async function POST(req: Request) {
   const fragment = await prisma.fragment.findUnique({
     where: { id: fragmentId },
     select: {
+      id: true,
       sandboxUrl: true,
+      files: true,
       message: {
         select: {
           project: {
             select: {
               id: true,
+              orgId: true,
               userId: true,
+              sandboxUpdatedAt: true,
             },
           },
         },
@@ -72,19 +85,102 @@ export async function POST(req: Request) {
   }
 
   try {
-    await Sandbox.setTimeout(sandboxId, SANDBOX_TIMEOUT);
-    await prisma.project.update({
-      where: { id: fragment.message.project.id },
-      data: {
-        sandboxId,
-        sandboxUpdatedAt: new Date(),
-      },
+    const sandbox = await Sandbox.connect(sandboxId);
+    await ensureSandboxPreviewReady(sandboxId);
+    const sandboxUrl = `https://${sandbox.getHost(SANDBOX_PREVIEW_PORT)}`;
+    await sandbox.setTimeout(SANDBOX_TIMEOUT);
+    await recordSandboxUsage({
+      projectId: fragment.message.project.id,
+      userId,
+      orgId: fragment.message.project.orgId,
+      lastUpdatedAt: fragment.message.project.sandboxUpdatedAt,
     });
+    await touchProjectSandbox({
+      projectId: fragment.message.project.id,
+      sandboxId,
+      sandboxUrl,
+    });
+    if (sandboxUrl !== fragment.sandboxUrl) {
+      await prisma.fragment.update({
+        where: { id: fragment.id },
+        data: { sandboxUrl },
+      });
+    }
+
+    return NextResponse.json({ ok: true, sandboxUrl });
   } catch (error) {
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Heartbeat failed" },
-      { status: 502 }
-    );
+    try {
+      const projectFragments = await prisma.fragment.findMany({
+        where: {
+          message: {
+            projectId: fragment.message.project.id,
+          },
+        },
+        select: {
+          files: true,
+          createdAt: true,
+        },
+        orderBy: {
+          createdAt: "asc",
+        },
+      });
+
+      const filesToWrite: Record<string, string> = {};
+      for (const projectFragment of projectFragments) {
+        const files = projectFragment.files;
+        if (!files || typeof files !== "object") continue;
+        for (const [path, content] of Object.entries(files)) {
+          if (typeof content === "string") {
+            filesToWrite[path] = content;
+          }
+        }
+      }
+
+      const managedSandbox = await ensureProjectSandbox({
+        projectId: fragment.message.project.id,
+        userId,
+        orgId: fragment.message.project.orgId,
+        projectSandboxId: sandboxId,
+        inferredSandboxId: sandboxId,
+        hydrateFiles: filesToWrite,
+      });
+
+      await ensureSandboxPreviewReady(managedSandbox.sandboxId);
+      const sandbox = await Sandbox.connect(managedSandbox.sandboxId);
+      await sandbox.setTimeout(SANDBOX_TIMEOUT);
+
+      const sandboxUrl = managedSandbox.sandboxUrl;
+
+      await prisma.fragment.update({
+        where: { id: fragment.id },
+        data: { sandboxUrl },
+      });
+
+      await touchProjectSandbox({
+        projectId: fragment.message.project.id,
+        sandboxId: managedSandbox.sandboxId,
+        sandboxUrl,
+      });
+
+      await recordSandboxUsage({
+        projectId: fragment.message.project.id,
+        userId,
+        orgId: fragment.message.project.orgId,
+        lastUpdatedAt: fragment.message.project.sandboxUpdatedAt,
+      });
+
+      return NextResponse.json({ ok: true, sandboxUrl });
+    } catch (fallbackError) {
+      return NextResponse.json(
+        {
+          error:
+            fallbackError instanceof Error
+              ? fallbackError.message
+              : "Heartbeat failed",
+        },
+        { status: 502 },
+      );
+    }
   }
 
   return NextResponse.json({ ok: true });

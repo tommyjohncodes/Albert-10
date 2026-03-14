@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { prisma } from "@/lib/db";
 import { SandboxState } from "@/generated/prisma";
 import { getClerkClient } from "@/lib/clerk-server";
+import { getActiveSandboxCutoff } from "@/lib/sandbox-activity";
 
 import { aggregateUsage } from "@/lib/llm-usage";
 import { aggregateSandboxUsage } from "@/lib/sandbox-usage";
@@ -245,6 +246,7 @@ export const adminRouter = createTRPCRouter({
       }
 
       const orgIds = organizations.map((org) => org.id);
+      const activeCutoff = getActiveSandboxCutoff();
       const [settings, usageRows, sandboxUsageRows, activeSandboxRows] = await Promise.all([
         prisma.orgLlmSettings.findMany({
           where: {
@@ -273,6 +275,9 @@ export const adminRouter = createTRPCRouter({
               in: orgIds,
             },
             state: SandboxState.RUNNING,
+            lastActiveAt: {
+              gte: activeCutoff,
+            },
           },
           select: {
             orgId: true,
@@ -349,6 +354,7 @@ export const adminRouter = createTRPCRouter({
       })
     )
     .query(async ({ input }) => {
+      const activeCutoff = getActiveSandboxCutoff();
       const [settings, usageRows, sandboxUsageRows, activeSandboxRows] = await Promise.all([
         prisma.orgLlmSettings.findUnique({
           where: { orgId: input.orgId },
@@ -363,6 +369,9 @@ export const adminRouter = createTRPCRouter({
           where: {
             orgId: input.orgId,
             state: SandboxState.RUNNING,
+            lastActiveAt: {
+              gte: activeCutoff,
+            },
           },
           orderBy: [
             { lastActiveAt: "desc" },
@@ -539,6 +548,7 @@ export const adminRouter = createTRPCRouter({
       }
 
       const userIds = users.map((user) => user.id);
+      const activeCutoff = getActiveSandboxCutoff();
       const [usageRows, sandboxUsageRows, activeSandboxRows] = await Promise.all([
         prisma.llmUsage.findMany({
           where: {
@@ -560,6 +570,9 @@ export const adminRouter = createTRPCRouter({
               in: userIds,
             },
             state: SandboxState.RUNNING,
+            lastActiveAt: {
+              gte: activeCutoff,
+            },
           },
           select: {
             userId: true,
@@ -635,6 +648,7 @@ export const adminRouter = createTRPCRouter({
       })
     )
     .query(async ({ input }) => {
+      const activeCutoff = getActiveSandboxCutoff();
       const [usageRows, activeSandboxRows] = await Promise.all([
         prisma.llmUsage.findMany({
           where: {
@@ -645,6 +659,9 @@ export const adminRouter = createTRPCRouter({
           where: {
             userId: input.userId,
             state: SandboxState.RUNNING,
+            lastActiveAt: {
+              gte: activeCutoff,
+            },
           },
           orderBy: [
             { lastActiveAt: "desc" },

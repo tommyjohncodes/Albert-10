@@ -6,6 +6,7 @@ import { SANDBOX_RUN_TIMEOUT, SANDBOX_TIMEOUT } from "@/inngest/types";
 import { getSandbox } from "@/inngest/utils";
 
 import { SANDBOX_PREVIEW_PORT } from "./sandbox-preview";
+import { getActiveSandboxCutoff } from "./sandbox-activity";
 
 export const MAX_ACTIVE_SANDBOXES_PER_USER = 2;
 
@@ -217,10 +218,14 @@ const evictOverflowSandboxes = async (
   keepSandboxIds: string[],
   additionalSlotsNeeded = 0,
 ) => {
+  const cutoff = getActiveSandboxCutoff();
   const activeSandboxes = await tx.sandboxInstance.findMany({
     where: {
       userId,
       state: SandboxState.RUNNING,
+      lastActiveAt: {
+        gte: cutoff,
+      },
     },
     orderBy: [
       { lastActiveAt: "asc" },

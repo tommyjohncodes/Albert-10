@@ -148,9 +148,9 @@ export const MessageForm = ({ projectId }: Props) => {
                   "gap-2",
                   isPicking && "border-primary text-primary"
                 )}
+                aria-label={isPicking ? "Picking element" : "Pick element"}
               >
                 <CrosshairIcon className="size-4" />
-                {isPicking ? "Picking…" : "Pick element"}
               </Button>
             </Hint>
             <div className="text-[10px] text-muted-foreground font-mono">

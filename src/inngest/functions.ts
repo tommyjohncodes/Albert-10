@@ -23,7 +23,12 @@ import {
   ensureSandboxPreviewReady,
   SANDBOX_PREVIEW_PORT,
 } from "@/lib/sandbox-preview";
-import { FRAGMENT_TITLE_PROMPT, PROMPT, RESPONSE_PROMPT } from "@/prompt";
+import {
+  CONTEXT_SUMMARY_PROMPT,
+  FRAGMENT_TITLE_PROMPT,
+  PROMPT,
+  RESPONSE_PROMPT,
+} from "@/prompt";
 
 import { inngest } from "./client";
 import { SANDBOX_RUN_TIMEOUT, SANDBOX_TIMEOUT } from "./types";
@@ -107,6 +112,8 @@ const normalizeUsage = (usage?: RawUsage | null): UsageShape => {
     costUsd: Number.isFinite(costUsd) ? costUsd : 0,
   };
 };
+
+const MAX_CONTEXT_SUMMARY_LENGTH = 1200;
 
 const parseUsageFromRaw = (raw: unknown): UsageShape => {
   if (!raw) {
@@ -456,8 +463,24 @@ export const codeAgentFunction = inngest.createFunction(
 
     await createProgressMessage("Planning your request...");
 
+    const projectContext = await step.run("get-project-context", async () => {
+      try {
+        return await prisma.projectContext.findUnique({
+          where: { projectId: event.data.projectId },
+          select: { summary: true },
+        });
+      } catch (error) {
+        console.warn("Failed to load project context", error);
+        return null;
+      }
+    });
+
+    const priorContextSummary = projectContext?.summary
+      ? projectContext.summary.slice(0, MAX_CONTEXT_SUMMARY_LENGTH)
+      : null;
+
     const previousMessages = await step.run("get-previous-messages", async () => {
-      const formattedMessages: Message[] = [];
+      const recentMessages: Message[] = [];
 
       const messages = await prisma.message.findMany({
         where: {
@@ -469,18 +492,30 @@ export const codeAgentFunction = inngest.createFunction(
         orderBy: {
           createdAt: "desc",
         },
-        take: 5,
+        take: 2,
       });
 
       for (const message of messages) {
-        formattedMessages.push({
+        recentMessages.push({
           type: "text",
           role: message.role === "ASSISTANT" ? "assistant" : "user",
           content: message.content,
         })
       }
 
-      return formattedMessages.reverse();
+      const orderedMessages = recentMessages.reverse();
+      if (priorContextSummary) {
+        return [
+          {
+            type: "text",
+            role: "assistant",
+            content: `Project context summary:\n${priorContextSummary}`,
+          },
+          ...orderedMessages,
+        ];
+      }
+
+      return orderedMessages;
     });
 
     const buildAgentState = () =>
@@ -827,6 +862,40 @@ export const codeAgentFunction = inngest.createFunction(
 
     const responseOutput = responseResult.output;
 
+    const isError =
+      Boolean(result.state.data.error) ||
+      !result.state.data.summary ||
+      Object.keys(result.state.data.files || {}).length === 0;
+
+    const resolvedSummary = result.state.data.summary
+      ? normalizeTaskSummary(result.state.data.summary)
+      : null;
+
+    let contextSummaryResult: { output: Message[]; raw?: unknown } | null = null;
+    let nextContextSummary: string | null = null;
+
+    if (resolvedSummary && !isError) {
+      const contextSummaryGenerator = createAgent({
+        name: "context-summary-generator",
+        description: "Generates a compact project context summary",
+        system: CONTEXT_SUMMARY_PROMPT,
+        model: llmModels.response,
+      });
+
+      contextSummaryResult = await contextSummaryGenerator.run(
+        JSON.stringify({
+          previous_summary: priorContextSummary ?? "",
+          user_request: event.data.value,
+          task_summary: resolvedSummary,
+        }),
+      );
+
+      const parsedContextSummary = parseAgentOutput(contextSummaryResult.output);
+      if (parsedContextSummary) {
+        nextContextSummary = parsedContextSummary.slice(0, MAX_CONTEXT_SUMMARY_LENGTH);
+      }
+    }
+
     await step.run("record-llm-usage", async () => {
       const usageByModel = [
         {
@@ -846,6 +915,13 @@ export const codeAgentFunction = inngest.createFunction(
         });
       }
 
+      if (contextSummaryResult) {
+        usageByModel.push({
+          modelName: llmModels.modelNames.response,
+          usage: extractUsageFromAgentResult(contextSummaryResult),
+        });
+      }
+
       for (const item of usageByModel) {
         await recordLlmUsage({
           userId,
@@ -859,11 +935,6 @@ export const codeAgentFunction = inngest.createFunction(
         });
       }
     });
-
-    const isError =
-      Boolean(result.state.data.error) ||
-      !result.state.data.summary ||
-      Object.keys(result.state.data.files || {}).length === 0;
 
     const sandboxUrl = await step.run("get-sandbox-url", async () => {
       if (!isError) {
@@ -915,9 +986,6 @@ export const codeAgentFunction = inngest.createFunction(
       }
 
       const resolvedTitle = fragmentTitle ?? "Fragment";
-      const resolvedSummary = result.state.data.summary
-        ? normalizeTaskSummary(result.state.data.summary)
-        : null;
 
       return await prisma.message.create({
         data: {
@@ -936,6 +1004,19 @@ export const codeAgentFunction = inngest.createFunction(
         },
       })
     });
+
+    if (nextContextSummary) {
+      await step.run("save-project-context", async () => {
+        await prisma.projectContext.upsert({
+          where: { projectId: event.data.projectId },
+          update: { summary: nextContextSummary },
+          create: {
+            projectId: event.data.projectId,
+            summary: nextContextSummary,
+          },
+        });
+      });
+    }
 
     await step.run("record-sandbox-usage", async () => {
       const project = await prisma.project.findUnique({

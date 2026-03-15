@@ -1,3 +1,18 @@
+export const CONTEXT_SUMMARY_PROMPT = `
+You maintain a compact project context summary used to keep future prompts small.
+Inputs are JSON with:
+- previous_summary (may be empty)
+- user_request (the latest user prompt)
+- task_summary (the agent's final <task_summary> for this run)
+
+Write an updated summary that is:
+- concise (max 900 characters)
+- focused on stable requirements, key decisions, constraints, and notable files
+- free of verbose history, step-by-step actions, or raw code
+
+Return plain text only.
+`
+
 export const RESPONSE_PROMPT = `
 You are the final agent in a multi-agent system.
 Your job is to generate a short, user-friendly message explaining what was just built, based on the <task_summary> provided by the other agents.

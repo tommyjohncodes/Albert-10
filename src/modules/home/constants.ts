@@ -1,50 +1,50 @@
 export const PROJECT_TEMPLATES = [
   {
-    emoji: "🎬",
-    title: "Build a Netflix clone",
+    emoji: "📚",
+    title: "History study guide",
     prompt:
-      "Build a Netflix-style homepage with a hero banner (use a nice, dark-mode compatible gradient here), movie sections, responsive cards, and a modal for viewing details using mock data and local state. Use dark mode.",
+      "Create an interactive history study guide with timeline sections, key figure cards, and quick-quiz flashcards using local data and state. Include a study progress tracker and a clean, academic layout.",
   },
   {
-    emoji: "📦",
-    title: "Build an admin dashboard",
+    emoji: "🧠",
+    title: "Study planner dashboard",
     prompt:
-      "Create an admin dashboard with a sidebar, stat cards, a chart placeholder, and a basic table with filter and pagination using local state. Use clear visual grouping and balance in your design for a modern, professional look.",
-  },
-  {
-    emoji: "📋",
-    title: "Build a kanban board",
-    prompt:
-      "Build a kanban board with drag-and-drop using react-beautiful-dnd and support for adding and removing tasks with local state. Use consistent spacing, column widths, and hover effects for a polished UI.",
+      "Build a student study planner dashboard with upcoming assignments, weekly goals, and a focus timer widget. Use local state for task completion and filters, with a calm, organized layout.",
   },
   {
     emoji: "🗂️",
-    title: "Build a file manager",
+    title: "Assignment organizer",
     prompt:
-      "Build a file manager with folder list, file grid, and options to rename or delete items using mock data and local state. Focus on spacing, clear icons, and visual distinction between folders and files.",
+      "Create an assignment organizer with columns for To Do, In Progress, and Done. Support adding, editing, and moving tasks with local state, plus due dates and priority tags.",
   },
   {
-    emoji: "📺",
-    title: "Build a YouTube clone",
+    emoji: "🧪",
+    title: "Lab report tracker",
     prompt:
-      "Build a YouTube-style homepage with mock video thumbnails, a category sidebar, and a modal preview with title and description using local state. Ensure clean alignment and a well-organized grid layout.",
+      "Build a lab report tracker with sections for experiments, status, and submission dates. Include filters and a detail panel using local state and clean table styling.",
   },
   {
-    emoji: "🛍️",
-    title: "Build a store page",
+    emoji: "📝",
+    title: "Notes hub",
     prompt:
-      "Build a store page with category filters, a product grid, and local cart logic to add and remove items. Focus on clear typography, spacing, and button states for a great e-commerce UI.",
+      "Create a notes hub with subjects, searchable notes, and pinned highlights. Use local state for filtering and a two-panel layout for note preview.",
   },
   {
-    emoji: "🏡",
-    title: "Build an Airbnb clone",
+    emoji: "📅",
+    title: "Exam countdown",
     prompt:
-      "Build an Airbnb-style listings grid with mock data, filter sidebar, and a modal with property details using local state. Use card spacing, soft shadows, and clean layout for a welcoming design.",
+      "Build an exam countdown dashboard with upcoming exams, study checklists, and daily time blocks. Use local state for checklist progress and a clean card-based layout.",
   },
   {
-    emoji: "🎵",
-    title: "Build a Spotify clone",
+    emoji: "📖",
+    title: "Reading tracker",
     prompt:
-      "Build a Spotify-style music player with a sidebar for playlists, a main area for song details, and playback controls. Use local state for managing playback and song selection. Prioritize layout balance and intuitive control placement for a smooth user experience. Use dark mode.",
+      "Create a reading tracker for classes with book lists, chapter progress, and reading goals. Include progress bars and filters using local state.",
+  },
+  {
+    emoji: "✅",
+    title: "Study checklist",
+    prompt:
+      "Build a study checklist app with subjects, topic groups, and completion tracking. Support adding/removing items with local state and a clean, focused UI.",
   }
 ] as const;

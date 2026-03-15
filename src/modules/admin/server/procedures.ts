@@ -407,6 +407,23 @@ export const adminRouter = createTRPCRouter({
     )
     .query(async ({ input }) => {
       const activeCutoff = getActiveSandboxCutoff();
+      const agentFailureClient = (
+        prisma as unknown as { agentFailure?: { findMany: Function } }
+      ).agentFailure;
+      const agentFailureQuery = agentFailureClient?.findMany
+        ? agentFailureClient.findMany({
+            where: {
+              project: {
+                orgId: input.orgId,
+              },
+            },
+            orderBy: {
+              createdAt: "desc",
+            },
+            take: 20,
+            select: agentFailureSelect,
+          })
+        : Promise.resolve([]);
       const [settings, usageRows, sandboxUsageRows, activeSandboxRows, agentFailureRows] = await Promise.all([
         prisma.orgLlmSettings.findUnique({
           where: { orgId: input.orgId },
@@ -431,18 +448,7 @@ export const adminRouter = createTRPCRouter({
           ],
           select: activeSandboxSelect,
         }),
-        prisma.agentFailure.findMany({
-          where: {
-            project: {
-              orgId: input.orgId,
-            },
-          },
-          orderBy: {
-            createdAt: "desc",
-          },
-          take: 20,
-          select: agentFailureSelect,
-        }),
+        agentFailureQuery,
       ]);
 
       let organization = {
@@ -502,6 +508,9 @@ export const adminRouter = createTRPCRouter({
         { days: 30 }
       );
       const sandboxUsage = aggregateSandboxUsage(sandboxUsageRows);
+      const safeAgentFailures = Array.isArray(agentFailureRows)
+        ? agentFailureRows
+        : [];
 
       return {
         organization: {
@@ -522,7 +531,9 @@ export const adminRouter = createTRPCRouter({
         usage,
         sandboxUsage,
         activeSandboxes: serializeActiveSandboxes(activeSandboxRows),
-        agentFailures: serializeAgentFailures(agentFailureRows),
+        agentFailures: serializeAgentFailures(
+          safeAgentFailures as Parameters<typeof serializeAgentFailures>[0]
+        ),
       };
     }),
 
@@ -714,6 +725,23 @@ export const adminRouter = createTRPCRouter({
     )
     .query(async ({ input }) => {
       const activeCutoff = getActiveSandboxCutoff();
+      const agentFailureClient = (
+        prisma as unknown as { agentFailure?: { findMany: Function } }
+      ).agentFailure;
+      const agentFailureQuery = agentFailureClient?.findMany
+        ? agentFailureClient.findMany({
+            where: {
+              project: {
+                userId: input.userId,
+              },
+            },
+            orderBy: {
+              createdAt: "desc",
+            },
+            take: 20,
+            select: agentFailureSelect,
+          })
+        : Promise.resolve([]);
       const [usageRows, activeSandboxRows, agentFailureRows] = await Promise.all([
         prisma.llmUsage.findMany({
           where: {
@@ -734,18 +762,7 @@ export const adminRouter = createTRPCRouter({
           ],
           select: activeSandboxSelect,
         }),
-        prisma.agentFailure.findMany({
-          where: {
-            project: {
-              userId: input.userId,
-            },
-          },
-          orderBy: {
-            createdAt: "desc",
-          },
-          take: 20,
-          select: agentFailureSelect,
-        }),
+        agentFailureQuery,
       ]);
 
       let user = {
@@ -798,6 +815,9 @@ export const adminRouter = createTRPCRouter({
         { days: 30 }
       );
       const { sandboxUsage } = await getUserUsageMetrics(input.userId);
+      const safeAgentFailures = Array.isArray(agentFailureRows)
+        ? agentFailureRows
+        : [];
 
       return {
         user,
@@ -805,7 +825,9 @@ export const adminRouter = createTRPCRouter({
         usage,
         sandboxUsage,
         activeSandboxes: serializeActiveSandboxes(activeSandboxRows),
-        agentFailures: serializeAgentFailures(agentFailureRows),
+        agentFailures: serializeAgentFailures(
+          safeAgentFailures as Parameters<typeof serializeAgentFailures>[0]
+        ),
       };
     }),
 

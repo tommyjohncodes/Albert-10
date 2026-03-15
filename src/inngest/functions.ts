@@ -600,7 +600,18 @@ export const codeAgentFunction = inngest.createFunction(
             }
           })
         },
-      })
+      }),
+      createTool({
+        name: "progress",
+        description: "Record a user-visible step update",
+        parameters: z.object({
+          content: z.string().min(1),
+        }),
+        handler: async ({ content }) => {
+          await createProgressMessage(content);
+          return "ok";
+        },
+      }),
     ];
 
     const lifecycle: Agent.Lifecycle<AgentState> = {

@@ -6,14 +6,10 @@ import {
   BookOpenIcon,
   ChevronDownIcon,
   ChevronUpIcon,
-  FileIcon,
   FilePenIcon,
   FilePlusIcon,
   FileTextIcon,
   RefreshCcwIcon,
-  ScrollTextIcon,
-  SparklesIcon,
-  WrenchIcon,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -44,15 +40,11 @@ export const ProgressGroup = ({
     return items.map((item) => {
       const value = item.content.toLowerCase();
       if (value.includes("planning")) return BrainIcon;
-      if (value.includes("opened")) return BookOpenIcon;
+      if (value.includes("opened") || value.includes("read")) return BookOpenIcon;
       if (value.includes("created")) return FilePlusIcon;
       if (value.includes("edited") || value.includes("updated")) return FilePenIcon;
       if (value.includes("restart") || value.includes("restarting")) return RefreshCcwIcon;
-      if (value.includes("install") || value.includes("running") || value.includes("command")) return WrenchIcon;
-      if (value.includes("read")) return ScrollTextIcon;
-      if (value.includes("write")) return FileTextIcon;
-      if (value.includes("building") || value.includes("generating")) return SparklesIcon;
-      return FileIcon;
+      return FileTextIcon;
     });
   }, [items]);
 
@@ -88,7 +80,7 @@ export const ProgressGroup = ({
         )}>
           <ul className="space-y-1">
             {items.map((item, index) => {
-              const Icon = itemIcons[index] ?? FileIcon;
+              const Icon = itemIcons[index] ?? FileTextIcon;
               return (
                 <li
                   key={item.id}

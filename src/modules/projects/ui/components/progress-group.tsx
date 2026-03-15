@@ -71,6 +71,14 @@ export const ProgressGroup = ({
               >
                 <BrainIcon className="size-3.5" />
               </span>
+              <span className="ml-2 text-xs font-medium text-muted-foreground">
+                Working
+                <span className="inline-flex items-center">
+                  <span className="animate-pulse" style={{ animationDelay: "0ms" }}>.</span>
+                  <span className="animate-pulse" style={{ animationDelay: "150ms" }}>.</span>
+                  <span className="animate-pulse" style={{ animationDelay: "300ms" }}>.</span>
+                </span>
+              </span>
             </span>
           )}
         </CollapsibleTrigger>

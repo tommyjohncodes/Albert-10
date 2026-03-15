@@ -117,6 +117,7 @@ const MAX_CONTEXT_SUMMARY_LENGTH = 1200;
 const MAX_TOOL_OUTPUT_CHARS = 12000;
 const MAX_READ_FILE_CHARS = 12000;
 const MAX_READ_SNIPPET_CHARS = 8000;
+const DEFAULT_AGENT_TIMEOUT_MS = 300_000;
 const DEFAULT_RESPONSE_TIMEOUT_MS = 45_000;
 const DEFAULT_CONTEXT_TIMEOUT_MS = 20_000;
 
@@ -136,7 +137,7 @@ const parseTimeoutMs = (value: string | undefined, fallback: number) => {
     return fallback;
   }
   const parsed = Number.parseInt(value, 10);
-  if (Number.isFinite(parsed) && parsed > 0) {
+  if (Number.isFinite(parsed) && parsed >= 0) {
     return parsed;
   }
   return fallback;
@@ -223,6 +224,9 @@ const buildFailureReason = ({
   if (errorType === "tool_call_parse_failed") {
     return "The model returned malformed tool arguments.";
   }
+  if (errorType === "agent_timeout") {
+    return "The agent took too long to respond.";
+  }
   if (errorType === "agent_error") {
     return "The agent reported an error during execution.";
   }
@@ -250,6 +254,9 @@ const buildFailureGuidance = ({
   }
   if (errorType === "tool_call_parse_failed") {
     return "Try again or switch models.";
+  }
+  if (errorType === "agent_timeout") {
+    return "Try again or simplify the request.";
   }
   if (errorType === "agent_error") {
     return "Try again, or simplify the request.";
@@ -379,6 +386,26 @@ const extractCommandName = (command: string) => {
 const isToolArgumentsParseError = (error: unknown) =>
   error instanceof Error &&
   error.message.includes("Failed to parse JSON with backticks");
+
+const resolveAgentErrorType = (error: unknown) => {
+  if (error instanceof Error && error.message.includes("timed out")) {
+    return "agent_timeout";
+  }
+  if (isToolArgumentsParseError(error)) {
+    return "tool_call_parse_failed";
+  }
+  return "agent_error";
+};
+
+const resolveAgentErrorMessage = (errorType: string) => {
+  if (errorType === "tool_call_parse_failed") {
+    return "The model returned malformed tool arguments. Please try again or switch models.";
+  }
+  if (errorType === "agent_timeout") {
+    return "The agent took too long to respond. Please try again or simplify the request.";
+  }
+  return "The model request failed. Please try again.";
+};
 
 export const codeAgentFunction = inngest.createFunction(
   { id: "code-agent" },
@@ -808,7 +835,15 @@ export const codeAgentFunction = inngest.createFunction(
       const state = buildAgentState();
       const agent = buildCodeAgent(model);
       const network = buildNetwork(agent, state);
-      const result = await network.run(event.data.value, { state });
+      const agentTimeoutMs = parseTimeoutMs(
+        process.env.LLM_AGENT_TIMEOUT_MS,
+        DEFAULT_AGENT_TIMEOUT_MS,
+      );
+      const runPromise = network.run(event.data.value, { state });
+      const result =
+        agentTimeoutMs > 0
+          ? await runWithTimeout(runPromise, agentTimeoutMs, "Coding agent run")
+          : await runPromise;
       return { result, modelName };
     };
 
@@ -827,13 +862,8 @@ export const codeAgentFunction = inngest.createFunction(
             llmModels.modelNames.codeFallback ?? llmModels.modelNames.code,
           );
         } catch (fallbackError) {
-          const errorType = isToolArgumentsParseError(fallbackError)
-            ? "tool_call_parse_failed"
-            : "agent_error";
-          const errorMessage =
-            errorType === "tool_call_parse_failed"
-              ? "The model returned malformed tool arguments. Please try again or switch models."
-              : "The model request failed. Please try again.";
+          const errorType = resolveAgentErrorType(fallbackError);
+          const errorMessage = resolveAgentErrorMessage(errorType);
           await recordAgentFailure({
             projectId: event.data.projectId,
             sandboxId,
@@ -861,13 +891,8 @@ export const codeAgentFunction = inngest.createFunction(
           return { error: errorType };
         }
       } else {
-        const errorType = isToolArgumentsParseError(error)
-          ? "tool_call_parse_failed"
-          : "agent_error";
-        const errorMessage =
-          errorType === "tool_call_parse_failed"
-            ? "The model returned malformed tool arguments. Please try again or switch models."
-            : "The model request failed. Please try again.";
+        const errorType = resolveAgentErrorType(error);
+        const errorMessage = resolveAgentErrorMessage(errorType);
         await recordAgentFailure({
           projectId: event.data.projectId,
           sandboxId,
@@ -961,11 +986,15 @@ export const codeAgentFunction = inngest.createFunction(
       await createProgressMessage("Generating response...");
 
       try {
-        responseResult = await runWithTimeout(
-          responseGenerator.run(result.state.data.summary),
-          responseTimeoutMs,
-          "Response generation",
-        );
+        const responsePromise = responseGenerator.run(result.state.data.summary);
+        responseResult =
+          responseTimeoutMs > 0
+            ? await runWithTimeout(
+                responsePromise,
+                responseTimeoutMs,
+                "Response generation",
+              )
+            : await responsePromise;
         responseOutput = responseResult.output;
         responseUsage = extractUsageFromAgentResult(responseResult);
       } catch (error) {
@@ -995,17 +1024,21 @@ export const codeAgentFunction = inngest.createFunction(
       });
 
       try {
-        contextSummaryResult = await runWithTimeout(
-          contextSummaryGenerator.run(
-            JSON.stringify({
-              previous_summary: priorContextSummary ?? "",
-              user_request: event.data.value,
-              task_summary: resolvedSummary,
-            }),
-          ),
-          contextTimeoutMs,
-          "Context summary generation",
+        const contextPromise = contextSummaryGenerator.run(
+          JSON.stringify({
+            previous_summary: priorContextSummary ?? "",
+            user_request: event.data.value,
+            task_summary: resolvedSummary,
+          }),
         );
+        contextSummaryResult =
+          contextTimeoutMs > 0
+            ? await runWithTimeout(
+                contextPromise,
+                contextTimeoutMs,
+                "Context summary generation",
+              )
+            : await contextPromise;
       } catch (error) {
         console.warn("Context summary generation failed or timed out", error);
         contextSummaryResult = null;

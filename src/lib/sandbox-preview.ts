@@ -10,9 +10,12 @@ const checkPreviewCommand =
   `bash -lc 'curl -s -o /dev/null -w "%{http_code}" --max-time 5 ${PREVIEW_URL} || true'`;
 
 const restartPreviewCommand = [
-  `pid=$(sudo ss -ltnp '( sport = :${SANDBOX_PREVIEW_PORT} )' | sed -n 's/.*pid=\\([0-9]\\+\\).*/\\1/p' | head -n 1)`,
-  'if [ -n "$pid" ]; then sudo kill "$pid" || true; fi',
-  "sudo bash -lc 'nohup bash /compile_page.sh >/var/tmp/next-preview.log 2>&1 &'",
+  "set -e",
+  `if command -v ss >/dev/null 2>&1; then pid=$(ss -ltnp '( sport = :${SANDBOX_PREVIEW_PORT} )' 2>/dev/null | sed -n 's/.*pid=\\([0-9]\\+\\).*/\\1/p' | head -n 1); fi`,
+  'if [ -n "$pid" ]; then kill "$pid" || true; fi',
+  `if command -v lsof >/dev/null 2>&1; then pids=$(lsof -ti tcp:${SANDBOX_PREVIEW_PORT} 2>/dev/null || true); if [ -n "$pids" ]; then kill $pids || true; fi; fi`,
+  "pkill -f \"next dev\" >/dev/null 2>&1 || true",
+  "nohup bash /compile_page.sh >/var/tmp/next-preview.log 2>&1 &",
 ].join("; ");
 
 const waitForPreviewCommand = [

@@ -59,46 +59,43 @@ export const ProgressGroup = ({
   return (
     <div className={cn(
       "flex flex-col",
-      isStandalone ? "group px-2 pb-4" : "pt-2",
+      isStandalone ? "group px-3 pb-3" : "pt-1",
     )}>
       <Collapsible open={open} onOpenChange={setOpen}>
-        <CollapsibleTrigger className="flex items-center gap-3 rounded-2xl px-2 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors">
-          <span className="flex size-9 items-center justify-center rounded-xl border bg-muted/60">
-            {open ? <ChevronUpIcon className="size-4" /> : <ChevronDownIcon className="size-4" />}
+        <CollapsibleTrigger className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors">
+          <span className="flex size-7 items-center justify-center rounded-lg border bg-muted/60">
+            {open ? <ChevronUpIcon className="size-3.5" /> : <ChevronDownIcon className="size-3.5" />}
           </span>
           <span className="font-medium">
             {open ? "Show less" : "Show more"}
-          </span>
-          <span className="text-xs text-muted-foreground/70">
-            ({items.length})
           </span>
           {isWorking && (
             <span className="ml-auto flex items-center">
               <span
                 className={cn(
-                  "flex size-9 items-center justify-center rounded-full border bg-muted/50 text-primary",
+                  "flex size-7 items-center justify-center rounded-full border bg-muted/50 text-primary",
                   "animate-pulse shadow-[0_0_14px_rgba(99,102,241,0.5)]"
                 )}
               >
-                <BrainIcon className="size-4" />
+                <BrainIcon className="size-3.5" />
               </span>
             </span>
           )}
         </CollapsibleTrigger>
         <CollapsibleContent className={cn(
-          "mt-3 space-y-2",
+          "mt-2",
           !isStandalone && "pl-1"
         )}>
-          <ul className="space-y-2">
+          <ul className="space-y-1">
             {items.map((item, index) => {
               const Icon = itemIcons[index] ?? FileIcon;
               return (
                 <li
                   key={item.id}
-                  className="flex items-start gap-3 rounded-2xl px-2 py-2 text-sm text-muted-foreground hover:bg-muted/50 transition-colors"
+                  className="flex items-start gap-2 px-0.5 py-1 text-sm text-muted-foreground"
                 >
-                  <span className="mt-0.5 flex size-9 items-center justify-center rounded-xl border bg-background">
-                    <Icon className="size-4" />
+                  <span className="mt-0.5 flex size-7 items-center justify-center rounded-lg border bg-background">
+                    <Icon className="size-3.5" />
                   </span>
                   <span className="leading-relaxed">{item.content}</span>
                 </li>

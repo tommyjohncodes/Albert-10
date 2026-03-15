@@ -114,6 +114,20 @@ const normalizeUsage = (usage?: RawUsage | null): UsageShape => {
 };
 
 const MAX_CONTEXT_SUMMARY_LENGTH = 1200;
+const MAX_TOOL_OUTPUT_CHARS = 12000;
+const MAX_READ_FILE_CHARS = 12000;
+const MAX_READ_SNIPPET_CHARS = 8000;
+
+const truncateText = (value: string, maxChars: number) => {
+  if (value.length <= maxChars) {
+    return value;
+  }
+  const truncated = value.slice(0, maxChars);
+  return `${truncated}\n\n[TRUNCATED ${value.length - maxChars} chars]`;
+};
+
+const clampNumber = (value: number, min: number, max: number) =>
+  Math.min(Math.max(value, min), max);
 
 const parseUsageFromRaw = (raw: unknown): UsageShape => {
   if (!raw) {
@@ -551,12 +565,13 @@ export const codeAgentFunction = inngest.createFunction(
                   buffers.stderr += data;
                 }
               });
-              return result.stdout;
+              return truncateText(result.stdout ?? "", MAX_TOOL_OUTPUT_CHARS);
             } catch (e) {
               console.error(
                 `Command failed: ${e} \nstdout: ${buffers.stdout}\nstderror: ${buffers.stderr}`,
               );
-              return `Command failed: ${e} \nstdout: ${buffers.stdout}\nstderr: ${buffers.stderr}`;
+              const combined = `Command failed: ${e} \nstdout: ${buffers.stdout}\nstderr: ${buffers.stderr}`;
+              return truncateText(combined, MAX_TOOL_OUTPUT_CHARS);
             }
           });
         },
@@ -627,13 +642,47 @@ export const codeAgentFunction = inngest.createFunction(
               const contents = [];
               for (const file of files) {
                 const content = await sandbox.files.read(file);
-                contents.push({ path: file, content });
+                contents.push({
+                  path: file,
+                  content: truncateText(content, MAX_READ_FILE_CHARS),
+                });
               }
-              return JSON.stringify(contents);
+              return truncateText(JSON.stringify(contents), MAX_TOOL_OUTPUT_CHARS);
             } catch (e) {
-              return "Error: " + e;
+              return truncateText("Error: " + e, MAX_TOOL_OUTPUT_CHARS);
             }
           })
+        },
+      }),
+      createTool({
+        name: "readFileSnippet",
+        description: "Read a specific line range from a file",
+        parameters: z.object({
+          path: z.string(),
+          startLine: z.number().int().min(1),
+          endLine: z.number().int().min(1),
+        }),
+        handler: async ({ path, startLine, endLine }, { step }) => {
+          await createProgressMessage(`Opened snippet: ${path} (${startLine}-${endLine})`);
+          return await step?.run("readFileSnippet", async () => {
+            try {
+              const sandbox = await getSandbox(sandboxId, SANDBOX_RUN_TIMEOUT);
+              const content = await sandbox.files.read(path);
+              const lines = content.split(/\r?\n/);
+              const safeStart = clampNumber(startLine, 1, lines.length);
+              const safeEnd = clampNumber(endLine, safeStart, lines.length);
+              const snippet = lines.slice(safeStart - 1, safeEnd).join("\n");
+              const payload = {
+                path,
+                startLine: safeStart,
+                endLine: safeEnd,
+                content: truncateText(snippet, MAX_READ_SNIPPET_CHARS),
+              };
+              return truncateText(JSON.stringify(payload), MAX_TOOL_OUTPUT_CHARS);
+            } catch (e) {
+              return truncateText("Error: " + e, MAX_TOOL_OUTPUT_CHARS);
+            }
+          });
         },
       }),
       createTool({

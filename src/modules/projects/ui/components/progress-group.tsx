@@ -139,49 +139,53 @@ export const ProgressGroup = ({
       isStandalone ? "group px-3 pb-3" : "pt-1",
     )}>
       <Collapsible open={open} onOpenChange={setOpen}>
-        <CollapsibleTrigger className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors">
-          {isWorking && (
-            <span className="flex items-center">
-              <span
-                className={cn(
-                  "flex size-7 items-center justify-center rounded-full border bg-muted/50 text-primary",
-                  "animate-pulse shadow-[0_0_14px_rgba(99,102,241,0.5)]"
-                )}
-              >
-                <BrainIcon className="size-3.5" />
-              </span>
-              <span className="ml-2 text-sm font-medium text-muted-foreground">
-                Working
-                <span className="inline-flex items-center">
-                  <span className="w-0 overflow-hidden animate-[ellipsis_1.2s_steps(4,end)_infinite]">
-                    ...
+        <CollapsibleTrigger className="flex w-full flex-col gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors">
+          <div className="flex items-center justify-between gap-3">
+            {isWorking && (
+              <span className="flex items-center">
+                <span
+                  className={cn(
+                    "flex size-7 items-center justify-center rounded-full border bg-muted/50 text-primary",
+                    "animate-pulse shadow-[0_0_14px_rgba(99,102,241,0.5)]"
+                  )}
+                >
+                  <BrainIcon className="size-3.5" />
+                </span>
+                <span className="ml-2 text-sm font-medium text-muted-foreground">
+                  Working
+                  <span className="inline-flex items-center">
+                    <span className="w-0 overflow-hidden animate-[ellipsis_1.2s_steps(4,end)_infinite]">
+                      ...
+                    </span>
                   </span>
                 </span>
               </span>
+            )}
+            <span className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
+              <span className="flex items-center gap-1">
+                {actionPreview.map((Icon, index) => (
+                  <span
+                    key={`action-${index}`}
+                    className="flex size-6 items-center justify-center rounded-lg border bg-background"
+                  >
+                    <Icon className="size-3.5" />
+                  </span>
+                ))}
+                {remainingActions > 0 && (
+                  <span className="px-1 text-[10px] font-medium">+{remainingActions}</span>
+                )}
+              </span>
+              <span>{actionItems.length} actions</span>
             </span>
-          )}
-          <span className="flex size-7 items-center justify-center rounded-lg border bg-muted/60">
-            {open ? <ChevronUpIcon className="size-3.5" /> : <ChevronDownIcon className="size-3.5" />}
-          </span>
-          <span className="font-medium">
-            {open ? "Show less" : "Show more"}
-          </span>
-          <span className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
-            <span className="flex items-center gap-1">
-              {actionPreview.map((Icon, index) => (
-                <span
-                  key={`action-${index}`}
-                  className="flex size-6 items-center justify-center rounded-lg border bg-background"
-                >
-                  <Icon className="size-3.5" />
-                </span>
-              ))}
-              {remainingActions > 0 && (
-                <span className="px-1 text-[10px] font-medium">+{remainingActions}</span>
-              )}
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="flex size-7 items-center justify-center rounded-lg border bg-muted/60">
+              {open ? <ChevronUpIcon className="size-3.5" /> : <ChevronDownIcon className="size-3.5" />}
             </span>
-            <span>{actionItems.length} actions</span>
-          </span>
+            <span className="font-medium">
+              {open ? "Show less" : "Show more"}
+            </span>
+          </div>
         </CollapsibleTrigger>
         <CollapsibleContent className="mt-3 space-y-4">
           {sections.map((section) => {

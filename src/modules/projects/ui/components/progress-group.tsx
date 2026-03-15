@@ -50,7 +50,7 @@ export const ProgressGroup = ({
     });
   }, [items]);
 
-  const actionPreview = itemIcons.slice(0, 6);
+  const actionPreview = itemIcons.slice(0, 4);
   const remainingActions = Math.max(items.length - actionPreview.length, 0);
 
   return (
@@ -77,9 +77,7 @@ export const ProgressGroup = ({
                 </span>
               ))}
               {remainingActions > 0 && (
-                <span className="px-1 text-[10px] font-medium">
-                  +{remainingActions}
-                </span>
+                <span className="px-1 text-[10px] font-medium">+{remainingActions}</span>
               )}
             </span>
             <span>{items.length} actions</span>
@@ -94,12 +92,12 @@ export const ProgressGroup = ({
               >
                 <BrainIcon className="size-3.5" />
               </span>
-              <span className="ml-2 text-xs font-medium text-muted-foreground">
+              <span className="ml-2 text-sm font-medium text-muted-foreground">
                 Working
                 <span className="inline-flex items-center">
-                  <span className="animate-pulse" style={{ animationDelay: "0ms" }}>.</span>
-                  <span className="animate-pulse" style={{ animationDelay: "150ms" }}>.</span>
-                  <span className="animate-pulse" style={{ animationDelay: "300ms" }}>.</span>
+                  <span className="w-0 overflow-hidden animate-[ellipsis_1.2s_steps(4,end)_infinite]">
+                    ...
+                  </span>
                 </span>
               </span>
             </span>

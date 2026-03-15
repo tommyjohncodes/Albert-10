@@ -1,10 +1,15 @@
+ "use client";
+
 import Image from "next/image";
+import { useUser } from "@clerk/nextjs";
 
 import { HomeSidebar } from "@/modules/home/ui/components/home-sidebar";
 import { ProjectForm } from "@/modules/home/ui/components/project-form";
 import { ProjectsList } from "@/modules/home/ui/components/projects-list";
 
 const Page = () => {
+  const { user } = useUser();
+  const firstName = user?.firstName ?? "there";
   return (
     <div className="flex flex-1 w-full -mx-4 flex-col md:flex-row">
       <HomeSidebar />
@@ -20,8 +25,8 @@ const Page = () => {
                 className="hidden md:block"
               />
             </div>
-            <h1 className="text-2xl md:text-5xl font-bold text-center">
-              Build something with Vibe
+            <h1 className="text-xl md:text-4xl font-bold text-center">
+              What do you want to build today, {firstName}?
             </h1>
             <p className="text-lg md:text-xl text-muted-foreground text-center">
               Create apps and websites by chatting with AI

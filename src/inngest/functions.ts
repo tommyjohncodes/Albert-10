@@ -454,6 +454,8 @@ export const codeAgentFunction = inngest.createFunction(
       }
     };
 
+    await createProgressMessage("Planning your request...");
+
     const previousMessages = await step.run("get-previous-messages", async () => {
       const formattedMessages: Message[] = [];
 

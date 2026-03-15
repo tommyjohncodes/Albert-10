@@ -1,9 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ExternalLinkIcon, RefreshCcwIcon } from "lucide-react";
 
-import { Hint } from "@/components/hint";
 import { FragmentPreview } from "../types";
-import { Button } from "@/components/ui/button";
 import { useElementPicker } from "./element-picker-context";
 
 interface Props {
@@ -13,14 +10,14 @@ interface Props {
 const HEARTBEAT_INTERVAL_MS = 60_000;
 
 export function FragmentWeb({ data }: Props) {
-  const [copied, setCopied] = useState(false);
   const [fragmentKey, setFragmentKey] = useState(0);
   const [currentSandboxUrl, setCurrentSandboxUrl] = useState<string | null>(
     data?.sandboxUrl ?? null,
   );
   const lastWakeAtRef = useRef(0);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  const { isPicking, setPreviewTarget, stopPicking } = useElementPicker();
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const { isPicking, setPreviewTarget } = useElementPicker();
 
   const previewOrigin = useMemo(() => {
     if (!currentSandboxUrl) return null;
@@ -96,64 +93,33 @@ export function FragmentWeb({ data }: Props) {
     };
   }, [data?.id, data?.sandboxUrl, wakeSandbox]);
 
-  const onRefresh = async () => {
+  const onRefresh = useCallback(async () => {
     await wakeSandbox(true);
     setFragmentKey((prev) => prev + 1);
-  };
+  }, [wakeSandbox]);
 
-  const handleCopy = () => {
-    if (currentSandboxUrl) {
-      navigator.clipboard.writeText(currentSandboxUrl);
-    }
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
+  const onOpenInNewTab = useCallback(() => {
+    if (!currentSandboxUrl) return;
+    window.open(currentSandboxUrl, "_blank", "noreferrer");
+  }, [currentSandboxUrl]);
+
+  useEffect(() => {
+    const handleRefresh = () => {
+      void onRefresh();
+    };
+    const handleOpen = () => {
+      onOpenInNewTab();
+    };
+    window.addEventListener("albert:preview-refresh", handleRefresh);
+    window.addEventListener("albert:preview-open", handleOpen);
+    return () => {
+      window.removeEventListener("albert:preview-refresh", handleRefresh);
+      window.removeEventListener("albert:preview-open", handleOpen);
+    };
+  }, [onRefresh, onOpenInNewTab]);
 
   return (
-    <div className="flex flex-col w-full h-full">
-      <div className="p-2 border-b bg-sidebar flex items-center gap-x-2">
-        <Hint text="Refresh" side="bottom" align="start">
-          <Button size="sm" variant="outline" onClick={onRefresh}>
-            <RefreshCcwIcon />
-          </Button>
-        </Hint>
-        {isPicking && (
-          <div className="rounded-full border px-2 py-1 text-xs font-medium bg-muted/60">
-            Picking element… press Esc to cancel
-          </div>
-        )}
-        <Hint text="Click to copy" side="bottom">
-          <Button 
-            size="sm" 
-            variant="outline" 
-            onClick={handleCopy}
-            disabled={!currentSandboxUrl || copied}
-            className="flex-1 justify-start text-start font-normal"
-          >
-            <span className="truncate">
-              {currentSandboxUrl ?? ""}
-            </span>
-          </Button>
-        </Hint>
-        <Hint text="Open in a new tab" side="bottom" align="start">
-          <Button
-            size="sm"
-            disabled={!currentSandboxUrl}
-            variant="outline"
-            onClick={() => {
-              if (!currentSandboxUrl) return;
-              window.open(currentSandboxUrl, "_blank");
-            }}
-          >
-            <ExternalLinkIcon />
-          </Button>
-        </Hint>
-        {isPicking && (
-          <Button size="sm" variant="ghost" onClick={stopPicking}>
-            Cancel
-          </Button>
-        )}
-      </div>
+    <div ref={containerRef} className="flex flex-col w-full h-full">
       <div className="relative flex-1">
         {isPicking && (
           <div className="pointer-events-none absolute inset-0 z-10 flex items-start justify-center pt-6">

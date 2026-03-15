@@ -1,17 +1,19 @@
 "use client";
 
 import { Suspense, useEffect, useState } from "react";
-import { EyeIcon, CodeIcon } from "lucide-react";
+import { EyeIcon, CodeIcon, ExternalLinkIcon, RefreshCcwIcon } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 
 import { UserControl } from "@/components/user-control";
 import { FileExplorer } from "@/components/file-explorer";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Button } from "@/components/ui/button";
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
+import { Hint } from "@/components/hint";
 import { useTRPC } from "@/trpc/client";
 
 import { ElementPickerProvider } from "../components/element-picker-context";
@@ -29,6 +31,7 @@ export const ProjectView = ({ projectId }: Props) => {
   const trpc = useTRPC();
   const [activeFragment, setActiveFragment] = useState<FragmentPreview | null>(null);
   const [tabState, setTabState] = useState<"preview" | "code">("preview");
+  const canPreview = Boolean(activeFragment?.sandboxUrl);
   const fragmentFilesQuery = useQuery(
     trpc.messages.getFragmentFiles.queryOptions(
       { fragmentId: activeFragment?.id ?? "" },
@@ -114,6 +117,30 @@ export const ProjectView = ({ projectId }: Props) => {
                 </TabsTrigger>
               </TabsList>
               <div className="ml-auto flex items-center gap-x-2">
+                <Hint text="Refresh preview" side="bottom" align="start">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!canPreview}
+                    onClick={() => {
+                      window.dispatchEvent(new CustomEvent("albert:preview-refresh"));
+                    }}
+                  >
+                    <RefreshCcwIcon />
+                  </Button>
+                </Hint>
+                <Hint text="Open in new tab" side="bottom" align="start">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!canPreview}
+                    onClick={() => {
+                      window.dispatchEvent(new CustomEvent("albert:preview-open"));
+                    }}
+                  >
+                    <ExternalLinkIcon />
+                  </Button>
+                </Hint>
                 <UserControl />
               </div>
             </div>

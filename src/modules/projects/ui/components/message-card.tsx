@@ -76,6 +76,61 @@ interface AssistantMessageProps {
   progressItems?: Array<{ id: string; content: string }>;
 };
 
+type ContentBlock =
+  | { type: "paragraph"; text: string }
+  | { type: "list"; items: string[] };
+
+const stripMarkdownEmphasis = (text: string) =>
+  text.replace(/\*\*(.+?)\*\*/g, "$1").replace(/\*(.+?)\*/g, "$1");
+
+const parseAssistantContent = (content: string): ContentBlock[] => {
+  const lines = content.split(/\r?\n/);
+  const blocks: ContentBlock[] = [];
+  let paragraph: string[] = [];
+  let listItems: string[] = [];
+
+  const flushParagraph = () => {
+    const text = paragraph.join(" ").trim();
+    if (text) {
+      blocks.push({ type: "paragraph", text });
+    }
+    paragraph = [];
+  };
+
+  const flushList = () => {
+    if (listItems.length > 0) {
+      blocks.push({ type: "list", items: listItems });
+    }
+    listItems = [];
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+    const match = line.match(/^(?:[-*]\s*)?✅\s*(.+)$/);
+    if (match) {
+      flushParagraph();
+      listItems.push(stripMarkdownEmphasis(match[1].trim()));
+      continue;
+    }
+    flushList();
+    paragraph.push(line);
+  }
+
+  flushParagraph();
+  flushList();
+
+  if (blocks.length === 0) {
+    return [{ type: "paragraph", text: content }];
+  }
+
+  return blocks;
+};
+
 const AssistantMessage = ({
   content,
   fragment,
@@ -104,7 +159,28 @@ const AssistantMessage = ({
         </span>
       </div>
       <div className="pl-8.5 flex flex-col gap-y-4">
-        <span>{content}</span>
+        <div className="space-y-3">
+          {parseAssistantContent(content).map((block, index) => {
+            if (block.type === "list") {
+              return (
+                <ul key={`list-${index}`} className="space-y-2">
+                  {block.items.map((item, itemIndex) => (
+                    <li key={`item-${index}-${itemIndex}`} className="flex items-start gap-2">
+                      <span className="mt-0.5">✅</span>
+                      <span className="leading-relaxed">{item}</span>
+                    </li>
+                  ))}
+                </ul>
+              );
+            }
+
+            return (
+              <p key={`para-${index}`} className="whitespace-pre-line leading-relaxed">
+                {block.text}
+              </p>
+            );
+          })}
+        </div>
         {progressItems && progressItems.length > 0 && (
           <ProgressGroup
             items={progressItems}

@@ -502,6 +502,7 @@ export const codeAgentFunction = inngest.createFunction(
           command: z.string(),
         }),
         handler: async ({ command }, { step }) => {
+          await createProgressMessage(`Ran command: ${extractCommandName(command)}`);
           return await step?.run("terminal", async () => {
             const buffers = { stdout: "", stderr: "" };
 
@@ -542,7 +543,11 @@ export const codeAgentFunction = inngest.createFunction(
         ) => {
           if (files.length > 0) {
             const fileList = files.map((file) => file.path).join(", ");
-            await createProgressMessage(`Changed files: ${fileList}`);
+            await createProgressMessage(
+              files.length === 1
+                ? `Updated file: ${fileList}`
+                : `Updated files: ${fileList}`,
+            );
           }
 
           const newFiles = await step?.run("createOrUpdateFiles", async () => {
@@ -572,6 +577,15 @@ export const codeAgentFunction = inngest.createFunction(
           files: z.array(z.string()),
         }),
         handler: async ({ files }, { step }) => {
+          if (files.length > 0) {
+            const preview = files.slice(0, 3).join(", ");
+            const suffix = files.length > 3 ? ` and ${files.length - 3} more` : "";
+            await createProgressMessage(
+              files.length === 1
+                ? `Opened file: ${preview}`
+                : `Opened files: ${preview}${suffix}`,
+            );
+          }
           return await step?.run("readFiles", async () => {
             try {
               const sandbox = await getSandbox(sandboxId, SANDBOX_RUN_TIMEOUT);

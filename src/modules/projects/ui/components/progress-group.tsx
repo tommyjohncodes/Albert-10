@@ -10,6 +10,7 @@ import {
   FilePlusIcon,
   FileTextIcon,
   RefreshCcwIcon,
+  TerminalIcon,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -40,6 +41,7 @@ export const ProgressGroup = ({
     return items.map((item) => {
       const value = item.content.toLowerCase();
       if (value.includes("planning")) return BrainIcon;
+      if (value.includes("ran command") || value.includes("command")) return TerminalIcon;
       if (value.includes("opened") || value.includes("read")) return BookOpenIcon;
       if (value.includes("created")) return FilePlusIcon;
       if (value.includes("edited") || value.includes("updated")) return FilePenIcon;
@@ -47,6 +49,9 @@ export const ProgressGroup = ({
       return FileTextIcon;
     });
   }, [items]);
+
+  const actionPreview = itemIcons.slice(0, 6);
+  const remainingActions = Math.max(items.length - actionPreview.length, 0);
 
   return (
     <div className={cn(
@@ -60,6 +65,24 @@ export const ProgressGroup = ({
           </span>
           <span className="font-medium">
             {open ? "Show less" : "Show more"}
+          </span>
+          <span className="ml-2 flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="flex items-center gap-1">
+              {actionPreview.map((Icon, index) => (
+                <span
+                  key={`action-${index}`}
+                  className="flex size-6 items-center justify-center rounded-lg border bg-background"
+                >
+                  <Icon className="size-3.5" />
+                </span>
+              ))}
+              {remainingActions > 0 && (
+                <span className="px-1 text-[10px] font-medium">
+                  +{remainingActions}
+                </span>
+              )}
+            </span>
+            <span>{items.length} actions</span>
           </span>
           {isWorking && (
             <span className="ml-auto flex items-center">

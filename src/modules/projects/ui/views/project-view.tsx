@@ -108,6 +108,18 @@ export const ProjectView = ({ projectId }: Props) => {
             onValueChange={(value) => setTabState(value as "preview" | "code")}
           >
             <div className="w-full h-12 flex items-center px-2 border-b gap-x-2">
+              <Hint text="Refresh preview" side="bottom" align="start">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!canPreview}
+                  onClick={() => {
+                    window.dispatchEvent(new CustomEvent("albert:preview-refresh"));
+                  }}
+                >
+                  <RefreshCcwIcon />
+                </Button>
+              </Hint>
               <TabsList className="h-8 p-0 border rounded-md">
                 <TabsTrigger value="preview" className="rounded-md">
                   <EyeIcon /> <span>Demo</span>
@@ -117,18 +129,6 @@ export const ProjectView = ({ projectId }: Props) => {
                 </TabsTrigger>
               </TabsList>
               <div className="ml-auto flex items-center gap-x-2">
-                <Hint text="Refresh preview" side="bottom" align="start">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={!canPreview}
-                    onClick={() => {
-                      window.dispatchEvent(new CustomEvent("albert:preview-refresh"));
-                    }}
-                  >
-                    <RefreshCcwIcon />
-                  </Button>
-                </Hint>
                 <Hint text="Open in new tab" side="bottom" align="start">
                   <Button
                     size="sm"

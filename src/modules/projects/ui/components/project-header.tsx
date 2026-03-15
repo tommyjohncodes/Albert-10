@@ -37,7 +37,7 @@ export const ProjectHeader = ({ projectId }: Props) => {
   const { setTheme, theme } = useTheme();
 
   return (
-    <header className="p-2 flex justify-between items-center border-b">
+    <header className="h-12 px-2 flex justify-between items-center border-b">
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button

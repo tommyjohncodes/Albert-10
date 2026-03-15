@@ -138,6 +138,92 @@ const parseUsageFromRaw = (raw: unknown): UsageShape => {
   return normalizeUsage(usage);
 };
 
+type FailureContext = {
+  errorType: string;
+  errorMessage?: string | null;
+  finishReason?: string | null;
+  summaryFound: boolean;
+  filesCount: number;
+};
+
+const buildFailureReason = ({
+  errorType,
+  finishReason,
+}: FailureContext): string | null => {
+  if (finishReason === "length") {
+    return "The model hit its output limit before finishing.";
+  }
+  if (finishReason === "content_filter") {
+    return "The response was blocked by the safety filter.";
+  }
+  if (errorType === "missing_summary") {
+    return "The agent did not produce the final task summary.";
+  }
+  if (errorType === "no_files") {
+    return "No files were created or updated.";
+  }
+  if (errorType === "sandbox_limit_reached") {
+    return "The sandbox concurrency limit was reached.";
+  }
+  if (errorType === "tool_call_parse_failed") {
+    return "The model returned malformed tool arguments.";
+  }
+  if (errorType === "agent_error") {
+    return "The agent reported an error during execution.";
+  }
+  return "An unknown error occurred.";
+};
+
+const buildFailureGuidance = ({
+  errorType,
+  finishReason,
+}: FailureContext): string | null => {
+  if (finishReason === "length") {
+    return "Try a shorter request or split the task into smaller steps.";
+  }
+  if (finishReason === "content_filter") {
+    return "Rephrase the request to avoid restricted content.";
+  }
+  if (errorType === "missing_summary") {
+    return "Retry the request, and consider shortening it if it keeps failing.";
+  }
+  if (errorType === "no_files") {
+    return "Be more specific about what you want built, then try again.";
+  }
+  if (errorType === "sandbox_limit_reached") {
+    return "Close another project or wait a minute, then retry.";
+  }
+  if (errorType === "tool_call_parse_failed") {
+    return "Try again or switch models.";
+  }
+  if (errorType === "agent_error") {
+    return "Try again, or simplify the request.";
+  }
+  return "Try again or simplify the request.";
+};
+
+const buildUserFailureMessage = (context: FailureContext): string => {
+  const base =
+    context.errorMessage ??
+    (context.errorType === "missing_summary"
+      ? "The agent didn't finish the response."
+      : context.errorType === "no_files"
+        ? "The agent didn't produce any files."
+        : "Something went wrong. Please try again.");
+  const reason = buildFailureReason(context);
+  const guidance = buildFailureGuidance(context);
+
+  let message = base;
+  if (reason) {
+    message += `\n\nReason: ${reason}`;
+  }
+  if (guidance) {
+    message += `\nTry: ${guidance}`;
+  }
+
+  return message;
+};
+
 const mergeUsage = (items: UsageShape[]): UsageShape => {
   const totals: UsageShape = {
     promptTokens: 0,
@@ -290,7 +376,14 @@ export const codeAgentFunction = inngest.createFunction(
     });
 
     if (!sandboxResult?.sandboxId) {
-      const message = "Something went wrong while starting the sandbox. Please try again.";
+      const message = buildUserFailureMessage({
+        errorType: "sandbox_limit_reached",
+        errorMessage:
+          "Something went wrong while starting the sandbox. Please try again.",
+        finishReason: null,
+        summaryFound: false,
+        filesCount: 0,
+      });
 
       await step.run("sandbox-limit-error", async () => {
         await prisma.agentFailure.create({
@@ -298,7 +391,8 @@ export const codeAgentFunction = inngest.createFunction(
             projectId: event.data.projectId,
             sandboxId: projectAccess?.sandboxId ?? null,
             errorType: "sandbox_limit_reached",
-            errorMessage: message,
+            errorMessage:
+              "Something went wrong while starting the sandbox. Please try again.",
             summaryFound: false,
             filesCount: 0,
           },
@@ -580,11 +674,18 @@ export const codeAgentFunction = inngest.createFunction(
               filesCount: 0,
             },
           });
+          const message = buildUserFailureMessage({
+            errorType: "tool_call_parse_failed",
+            errorMessage:
+              "The model returned malformed tool arguments. Please try again or switch models.",
+            finishReason: null,
+            summaryFound: false,
+            filesCount: 0,
+          });
           await prisma.message.create({
             data: {
               projectId: event.data.projectId,
-              content:
-                "The model returned malformed tool arguments. Please try again or switch models.",
+              content: message,
               role: "ASSISTANT",
               type: "ERROR",
             },
@@ -603,11 +704,18 @@ export const codeAgentFunction = inngest.createFunction(
             filesCount: 0,
           },
         });
+        const message = buildUserFailureMessage({
+          errorType: "tool_call_parse_failed",
+          errorMessage:
+            "The model returned malformed tool arguments. Please try again or switch models.",
+          finishReason: null,
+          summaryFound: false,
+          filesCount: 0,
+        });
         await prisma.message.create({
           data: {
             projectId: event.data.projectId,
-            content:
-              "The model returned malformed tool arguments. Please try again or switch models.",
+            content: message,
             role: "ASSISTANT",
             type: "ERROR",
           },
@@ -716,8 +824,6 @@ export const codeAgentFunction = inngest.createFunction(
 
     await step.run("save-result", async () => {
       if (isError) {
-        const message =
-          result.state.data.error ?? "Something went wrong. Please try again.";
         const filesCount = Object.keys(result.state.data.files || {}).length;
         const summaryFound = Boolean(result.state.data.summary);
         const errorType = result.state.data.error
@@ -727,6 +833,13 @@ export const codeAgentFunction = inngest.createFunction(
             : filesCount === 0
               ? "no_files"
               : "unknown_error";
+        const message = buildUserFailureMessage({
+          errorType,
+          errorMessage: result.state.data.error ?? null,
+          finishReason: result.state.data.finishReason ?? null,
+          summaryFound,
+          filesCount,
+        });
 
         await prisma.agentFailure.create({
           data: {

@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { EyeIcon, CodeIcon } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 
@@ -37,6 +37,37 @@ export const ProjectView = ({ projectId }: Props) => {
       },
     ),
   );
+
+  useEffect(() => {
+    if (!activeFragment?.id) return;
+    let isActive = true;
+
+    const startSandbox = async () => {
+      try {
+        const res = await fetch("/api/sandbox/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ projectId }),
+        });
+        if (!res.ok) return;
+        const payload = await res.json();
+        if (!isActive) return;
+        if (payload?.sandboxUrl) {
+          setActiveFragment((prev) =>
+            prev ? { ...prev, sandboxUrl: payload.sandboxUrl } : prev,
+          );
+        }
+      } catch {
+        // Best-effort start; ignore failures.
+      }
+    };
+
+    void startSandbox();
+
+    return () => {
+      isActive = false;
+    };
+  }, [activeFragment?.id, projectId]);
 
   return (
     <ElementPickerProvider>

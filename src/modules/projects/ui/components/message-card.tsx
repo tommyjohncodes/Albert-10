@@ -34,30 +34,18 @@ const FragmentCard = ({
   return (
     <button
       className={cn(
-        "flex items-start text-start gap-1.5 border rounded-md bg-muted w-fit px-2 py-1.5 hover:bg-secondary transition-colors",
-        isActiveFragment && 
-          "bg-primary text-primary-foreground border-primary hover:bg-primary",
+        "flex items-center text-start gap-2 border rounded-md w-fit px-3 h-8 transition-colors",
+        "bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700",
+        isActiveFragment && "ring-1 ring-emerald-500",
       )}
       onClick={() => onFragmentClick(fragment)}
     >
-      <Code2Icon className="size-3.5 mt-0.5" />
-      <div className="flex flex-col flex-1 gap-1">
-        <span className="text-xs font-semibold line-clamp-1">
-          {fragment.title}
-        </span>
-        <div
-          className={cn(
-            "flex items-center gap-1 text-xs",
-            isActiveFragment
-              ? "text-primary-foreground/80"
-              : "text-emerald-600",
-          )}
-        >
-          <CheckCircle2Icon className="size-3" />
-          <span>Task complete</span>
-        </div>
+      <Code2Icon className="size-3.5" />
+      <div className="flex items-center gap-1 text-xs font-semibold">
+        <CheckCircle2Icon className="size-3" />
+        <span>Task complete</span>
       </div>
-      <div className="flex items-center justify-center mt-0.5">
+      <div className="flex items-center justify-center">
         <ChevronRightIcon className="size-3.5" />
       </div>
     </button>

@@ -117,6 +117,8 @@ const MAX_CONTEXT_SUMMARY_LENGTH = 1200;
 const MAX_TOOL_OUTPUT_CHARS = 12000;
 const MAX_READ_FILE_CHARS = 12000;
 const MAX_READ_SNIPPET_CHARS = 8000;
+const DEFAULT_RESPONSE_TIMEOUT_MS = 45_000;
+const DEFAULT_CONTEXT_TIMEOUT_MS = 20_000;
 
 const truncateText = (value: string, maxChars: number) => {
   if (value.length <= maxChars) {
@@ -128,6 +130,38 @@ const truncateText = (value: string, maxChars: number) => {
 
 const clampNumber = (value: number, min: number, max: number) =>
   Math.min(Math.max(value, min), max);
+
+const parseTimeoutMs = (value: string | undefined, fallback: number) => {
+  if (!value) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return parsed;
+  }
+  return fallback;
+};
+
+const runWithTimeout = async <T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string,
+): Promise<T> => {
+  let timeoutId: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+};
 
 const parseUsageFromRaw = (raw: unknown): UsageShape => {
   if (!raw) {
@@ -892,6 +926,9 @@ export const codeAgentFunction = inngest.createFunction(
 
     let fragmentTitleResult: { output: Message[]; raw?: unknown } | null = null;
     let fragmentTitle: string | null = existingTitle;
+    let responseResult: { output: Message[]; raw?: unknown } | null = null;
+    let responseOutput: Message[] = [];
+    let responseUsage: UsageShape | null = null;
 
     if (!fragmentTitle) {
       const fragmentTitleGenerator = createAgent({
@@ -907,10 +944,6 @@ export const codeAgentFunction = inngest.createFunction(
       fragmentTitle = parseAgentOutput(fragmentTitleResult.output);
     }
 
-    const responseResult = await responseGenerator.run(result.state.data.summary);
-
-    const responseOutput = responseResult.output;
-
     const isError =
       Boolean(result.state.data.error) ||
       !result.state.data.summary ||
@@ -920,10 +953,40 @@ export const codeAgentFunction = inngest.createFunction(
       ? normalizeTaskSummary(result.state.data.summary)
       : null;
 
+    if (!isError) {
+      const responseTimeoutMs = parseTimeoutMs(
+        process.env.LLM_RESPONSE_TIMEOUT_MS,
+        DEFAULT_RESPONSE_TIMEOUT_MS,
+      );
+      await createProgressMessage("Generating response...");
+
+      try {
+        responseResult = await runWithTimeout(
+          responseGenerator.run(result.state.data.summary),
+          responseTimeoutMs,
+          "Response generation",
+        );
+        responseOutput = responseResult.output;
+        responseUsage = extractUsageFromAgentResult(responseResult);
+      } catch (error) {
+        console.warn("Response generator failed or timed out", error);
+        const fallback = resolvedSummary
+          ? `Here's what I built: ${resolvedSummary}`
+          : "Your task completed, but the response message could not be generated.";
+        responseOutput = [
+          { type: "text", role: "assistant", content: fallback },
+        ];
+      }
+    }
+
     let contextSummaryResult: { output: Message[]; raw?: unknown } | null = null;
     let nextContextSummary: string | null = null;
 
     if (resolvedSummary && !isError) {
+      const contextTimeoutMs = parseTimeoutMs(
+        process.env.LLM_CONTEXT_TIMEOUT_MS,
+        DEFAULT_CONTEXT_TIMEOUT_MS,
+      );
       const contextSummaryGenerator = createAgent({
         name: "context-summary-generator",
         description: "Generates a compact project context summary",
@@ -931,17 +994,28 @@ export const codeAgentFunction = inngest.createFunction(
         model: llmModels.response,
       });
 
-      contextSummaryResult = await contextSummaryGenerator.run(
-        JSON.stringify({
-          previous_summary: priorContextSummary ?? "",
-          user_request: event.data.value,
-          task_summary: resolvedSummary,
-        }),
-      );
+      try {
+        contextSummaryResult = await runWithTimeout(
+          contextSummaryGenerator.run(
+            JSON.stringify({
+              previous_summary: priorContextSummary ?? "",
+              user_request: event.data.value,
+              task_summary: resolvedSummary,
+            }),
+          ),
+          contextTimeoutMs,
+          "Context summary generation",
+        );
+      } catch (error) {
+        console.warn("Context summary generation failed or timed out", error);
+        contextSummaryResult = null;
+      }
 
-      const parsedContextSummary = parseAgentOutput(contextSummaryResult.output);
-      if (parsedContextSummary) {
-        nextContextSummary = parsedContextSummary.slice(0, MAX_CONTEXT_SUMMARY_LENGTH);
+      if (contextSummaryResult) {
+        const parsedContextSummary = parseAgentOutput(contextSummaryResult.output);
+        if (parsedContextSummary) {
+          nextContextSummary = parsedContextSummary.slice(0, MAX_CONTEXT_SUMMARY_LENGTH);
+        }
       }
     }
 
@@ -951,16 +1025,19 @@ export const codeAgentFunction = inngest.createFunction(
           modelName: codeModelName,
           usage: extractUsageFromNetwork(result),
         },
-        {
-          modelName: llmModels.modelNames.response,
-          usage: extractUsageFromAgentResult(responseResult),
-        },
       ];
 
       if (fragmentTitleResult) {
         usageByModel.push({
           modelName: llmModels.modelNames.title,
           usage: extractUsageFromAgentResult(fragmentTitleResult),
+        });
+      }
+
+      if (responseUsage) {
+        usageByModel.push({
+          modelName: llmModels.modelNames.response,
+          usage: responseUsage,
         });
       }
 

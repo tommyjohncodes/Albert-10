@@ -7,8 +7,6 @@ interface Props {
   data: FragmentPreview;
 };
 
-const HEARTBEAT_INTERVAL_MS = 60_000;
-
 export function FragmentWeb({ data }: Props) {
   const [fragmentKey, setFragmentKey] = useState(0);
   const [currentSandboxUrl, setCurrentSandboxUrl] = useState<string | null>(
@@ -72,24 +70,10 @@ export function FragmentWeb({ data }: Props) {
     }
   }, [data?.id, data?.sandboxUrl, currentSandboxUrl]);
 
+  // Single wake when preview is first shown; no periodic heartbeat to minimize E2B usage.
   useEffect(() => {
-    if (!data?.id || !data?.sandboxUrl) {
-      return;
-    }
-    let isActive = true;
-
-    const sendHeartbeat = async () => {
-      if (!isActive) return;
-      await wakeSandbox();
-    };
-
-    void wakeSandbox(true).then(() => {});
-    const interval = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
-
-    return () => {
-      isActive = false;
-      clearInterval(interval);
-    };
+    if (!data?.id || !data?.sandboxUrl) return;
+    void wakeSandbox(true);
   }, [data?.id, data?.sandboxUrl, wakeSandbox]);
 
   const onRefresh = useCallback(async () => {

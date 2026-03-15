@@ -14,6 +14,9 @@ import {
 } from "@/lib/sandbox-preview";
 import { SANDBOX_TIMEOUT } from "@/inngest/types";
 import { recordSandboxUsage } from "@/lib/sandbox-usage";
+
+/** Only extend sandbox timeout / record usage at most this often (minimizes E2B usage). */
+const EXTEND_COOLDOWN_MS = 30_000;
 import { ensureSandboxElementPicker } from "@/lib/sandbox-element-picker";
 
 const extractSandboxId = (sandboxUrl: string) => {
@@ -92,18 +95,27 @@ export async function POST(req: Request) {
     await ensureSandboxPreviewReady(sandboxId);
     const sandboxUrl = `https://${sandbox.getHost(SANDBOX_PREVIEW_PORT)}`;
     const pickerStatus = await ensureSandboxElementPicker(sandbox);
-    await sandbox.setTimeout(SANDBOX_TIMEOUT);
-    await recordSandboxUsage({
-      projectId: fragment.message.project.id,
-      userId,
-      orgId: fragment.message.project.orgId,
-      lastUpdatedAt: fragment.message.project.sandboxUpdatedAt,
-    });
-    await touchProjectSandbox({
-      projectId: fragment.message.project.id,
-      sandboxId,
-      sandboxUrl,
-    });
+
+    const lastUpdatedAt = fragment.message.project.sandboxUpdatedAt;
+    const shouldExtend =
+      !lastUpdatedAt ||
+      Date.now() - lastUpdatedAt.getTime() >= EXTEND_COOLDOWN_MS;
+
+    if (shouldExtend) {
+      await sandbox.setTimeout(SANDBOX_TIMEOUT);
+      await recordSandboxUsage({
+        projectId: fragment.message.project.id,
+        userId,
+        orgId: fragment.message.project.orgId,
+        lastUpdatedAt: fragment.message.project.sandboxUpdatedAt,
+      });
+      await touchProjectSandbox({
+        projectId: fragment.message.project.id,
+        sandboxId,
+        sandboxUrl,
+      });
+    }
+
     if (sandboxUrl !== fragment.sandboxUrl) {
       await prisma.fragment.update({
         where: { id: fragment.id },

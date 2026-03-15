@@ -1,5 +1,3 @@
-import Image from "next/image";
-import { format } from "date-fns";
 import { CheckCircle2Icon, ChevronRightIcon, Code2Icon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -69,7 +67,6 @@ const FragmentCard = ({
 interface AssistantMessageProps {
   content: string;
   fragment: FragmentPreview | null;
-  createdAt: Date;
   isActiveFragment: boolean;
   onFragmentClick: (fragment: FragmentPreview) => void;
   type: MessageType;
@@ -134,7 +131,6 @@ const parseAssistantContent = (content: string): ContentBlock[] => {
 const AssistantMessage = ({
   content,
   fragment,
-  createdAt,
   isActiveFragment,
   onFragmentClick,
   type,
@@ -142,23 +138,10 @@ const AssistantMessage = ({
 }: AssistantMessageProps) => {
   return (
     <div className={cn(
-      "flex flex-col group px-2 pb-4",
+      "flex flex-col group px-4 pb-4",
       type === "ERROR" && "text-red-700 dark:text-red-500",
     )}>
-      <div className="flex items-center gap-2 pl-2 mb-2">
-        <Image
-          src="/albert-logo.png"
-          alt="Albert"
-          width={18}
-          height={18}
-          className="shrink-0"
-        />
-        <span className="text-sm font-medium">Albert</span>
-        <span className="text-xs text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100">
-          {format(createdAt, "HH:mm 'on' MMM dd, yyyy")}
-        </span>
-      </div>
-      <div className="pl-8.5 flex flex-col gap-y-4">
+      <div className="flex flex-col gap-y-4">
         <div className="space-y-3">
           {parseAssistantContent(content).map((block, index) => {
             if (block.type === "list") {
@@ -215,7 +198,7 @@ export const MessageCard = ({
   content,
   role,
   fragment,
-  createdAt,
+  createdAt: _createdAt,
   isActiveFragment,
   onFragmentClick,
   type,
@@ -226,7 +209,6 @@ export const MessageCard = ({
       <AssistantMessage
         content={content}
         fragment={fragment}
-        createdAt={createdAt}
         isActiveFragment={isActiveFragment}
         onFragmentClick={onFragmentClick}
         type={type}

@@ -178,9 +178,9 @@ export const ProgressGroup = ({
               <span>{actionItems.length} actions</span>
             </span>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="flex size-7 items-center justify-center rounded-lg border bg-muted/60">
-              {open ? <ChevronUpIcon className="size-3.5" /> : <ChevronDownIcon className="size-3.5" />}
+          <div className="flex items-center gap-2 pl-1">
+            <span className="text-muted-foreground">
+              {open ? <ChevronUpIcon className="size-4" /> : <ChevronDownIcon className="size-4" />}
             </span>
             <span className="font-medium">
               {open ? "Show less" : "Show more"}

@@ -74,17 +74,14 @@ export const ProgressGroup = ({
             </span>
           )}
         </CollapsibleTrigger>
-        <CollapsibleContent className={cn(
-          "mt-2",
-          !isStandalone && "pl-1"
-        )}>
+        <CollapsibleContent className="mt-2">
           <ul className="space-y-1">
             {items.map((item, index) => {
               const Icon = itemIcons[index] ?? FileTextIcon;
               return (
                 <li
                   key={item.id}
-                  className="flex items-start gap-2 px-0.5 py-1 text-sm text-muted-foreground"
+                  className="flex items-start gap-2 py-1 text-sm text-muted-foreground"
                 >
                   <span className="mt-0.5 flex size-7 items-center justify-center rounded-lg border bg-background">
                     <Icon className="size-3.5" />

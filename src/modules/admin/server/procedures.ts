@@ -56,6 +56,58 @@ const activeSandboxSelect = {
   },
 } as const;
 
+const agentFailureSelect = {
+  id: true,
+  errorType: true,
+  errorMessage: true,
+  finishReason: true,
+  summaryFound: true,
+  filesCount: true,
+  createdAt: true,
+  project: {
+    select: {
+      id: true,
+      name: true,
+      userId: true,
+      orgId: true,
+    },
+  },
+} as const;
+
+function serializeAgentFailures(
+  rows: Array<{
+    id: string;
+    errorType: string;
+    errorMessage: string | null;
+    finishReason: string | null;
+    summaryFound: boolean;
+    filesCount: number;
+    createdAt: Date;
+    project: {
+      id: string;
+      name: string;
+      userId: string;
+      orgId: string | null;
+    };
+  }>,
+) {
+  return rows.map((row) => ({
+    id: row.id,
+    errorType: row.errorType,
+    errorMessage: row.errorMessage,
+    finishReason: row.finishReason,
+    summaryFound: row.summaryFound,
+    filesCount: row.filesCount,
+    createdAt: row.createdAt.toISOString(),
+    project: {
+      id: row.project.id,
+      name: row.project.name,
+      userId: row.project.userId,
+      orgId: row.project.orgId,
+    },
+  }));
+}
+
 async function getFallbackOrgIds() {
   const [projectOrgIds, usageOrgIds, sandboxUsageOrgIds, sandboxInstanceOrgIds] =
     await Promise.all([
@@ -355,7 +407,7 @@ export const adminRouter = createTRPCRouter({
     )
     .query(async ({ input }) => {
       const activeCutoff = getActiveSandboxCutoff();
-      const [settings, usageRows, sandboxUsageRows, activeSandboxRows] = await Promise.all([
+      const [settings, usageRows, sandboxUsageRows, activeSandboxRows, agentFailureRows] = await Promise.all([
         prisma.orgLlmSettings.findUnique({
           where: { orgId: input.orgId },
         }),
@@ -378,6 +430,18 @@ export const adminRouter = createTRPCRouter({
             { createdAt: "desc" },
           ],
           select: activeSandboxSelect,
+        }),
+        prisma.agentFailure.findMany({
+          where: {
+            project: {
+              orgId: input.orgId,
+            },
+          },
+          orderBy: {
+            createdAt: "desc",
+          },
+          take: 20,
+          select: agentFailureSelect,
         }),
       ]);
 
@@ -458,6 +522,7 @@ export const adminRouter = createTRPCRouter({
         usage,
         sandboxUsage,
         activeSandboxes: serializeActiveSandboxes(activeSandboxRows),
+        agentFailures: serializeAgentFailures(agentFailureRows),
       };
     }),
 
@@ -649,7 +714,7 @@ export const adminRouter = createTRPCRouter({
     )
     .query(async ({ input }) => {
       const activeCutoff = getActiveSandboxCutoff();
-      const [usageRows, activeSandboxRows] = await Promise.all([
+      const [usageRows, activeSandboxRows, agentFailureRows] = await Promise.all([
         prisma.llmUsage.findMany({
           where: {
             userId: input.userId,
@@ -668,6 +733,18 @@ export const adminRouter = createTRPCRouter({
             { createdAt: "desc" },
           ],
           select: activeSandboxSelect,
+        }),
+        prisma.agentFailure.findMany({
+          where: {
+            project: {
+              userId: input.userId,
+            },
+          },
+          orderBy: {
+            createdAt: "desc",
+          },
+          take: 20,
+          select: agentFailureSelect,
         }),
       ]);
 
@@ -728,6 +805,7 @@ export const adminRouter = createTRPCRouter({
         usage,
         sandboxUsage,
         activeSandboxes: serializeActiveSandboxes(activeSandboxRows),
+        agentFailures: serializeAgentFailures(agentFailureRows),
       };
     }),
 

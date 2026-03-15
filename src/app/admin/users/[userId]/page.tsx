@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 
 import { ActiveSandboxesCard } from "@/components/admin/active-sandboxes-card";
+import { AgentFailuresCard } from "@/components/admin/agent-failures-card";
 import { UsageCharts } from "@/components/admin/usage-charts";
 import { useTRPC } from "@/trpc/client";
 
@@ -62,6 +63,7 @@ export default function AdminUserDetailPage() {
       </div>
 
       <ActiveSandboxesCard items={data.activeSandboxes} />
+      <AgentFailuresCard items={data.agentFailures} />
 
       <UsageCharts
         daily={data.usage.daily}

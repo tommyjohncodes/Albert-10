@@ -8,6 +8,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckIcon, ChevronsUpDownIcon } from "lucide-react";
 
 import { ActiveSandboxesCard } from "@/components/admin/active-sandboxes-card";
+import { AgentFailuresCard } from "@/components/admin/agent-failures-card";
 import { UsageCharts } from "@/components/admin/usage-charts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -233,6 +234,7 @@ export default function AdminOrganizationDetailPage() {
       </div>
 
       <ActiveSandboxesCard items={data.activeSandboxes} />
+      <AgentFailuresCard items={data.agentFailures} />
 
       <UsageCharts
         daily={data.usage.daily}

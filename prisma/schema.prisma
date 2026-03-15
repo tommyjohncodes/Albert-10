@@ -26,6 +26,7 @@ model Project {
 
   messages Message[]
   sandboxInstances SandboxInstance[]
+  agentFailures AgentFailure[]
 }
 
 enum MessageRole {
@@ -89,6 +90,23 @@ model SandboxInstance {
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@index([userId, state, lastActiveAt])
+  @@index([projectId, createdAt])
+}
+
+model AgentFailure {
+  id String @id @default(uuid())
+  projectId String
+  sandboxId String?
+  errorType String
+  errorMessage String?
+  finishReason String?
+  lastAssistantMessage String?
+  summaryFound Boolean @default(false)
+  filesCount Int @default(0)
+  createdAt DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
   @@index([projectId, createdAt])
 }
 

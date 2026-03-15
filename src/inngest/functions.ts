@@ -33,6 +33,8 @@ interface AgentState {
   summary: string;
   files: { [path: string]: string };
   error?: string;
+  finishReason?: string;
+  lastAssistantMessage?: string;
 };
 
 interface UsageShape {
@@ -291,6 +293,16 @@ export const codeAgentFunction = inngest.createFunction(
       const message = "Something went wrong while starting the sandbox. Please try again.";
 
       await step.run("sandbox-limit-error", async () => {
+        await prisma.agentFailure.create({
+          data: {
+            projectId: event.data.projectId,
+            sandboxId: projectAccess?.sandboxId ?? null,
+            errorType: "sandbox_limit_reached",
+            errorMessage: message,
+            summaryFound: false,
+            filesCount: 0,
+          },
+        });
         return prisma.message.create({
           data: {
             projectId: event.data.projectId,
@@ -476,6 +488,9 @@ export const codeAgentFunction = inngest.createFunction(
         }
 
         const finishReason = extractFinishReasonFromRaw(result.raw);
+        if (finishReason) {
+          network.state.data.finishReason = finishReason;
+        }
         if (finishReason === "length" || finishReason === "content_filter") {
           network.state.data.error =
             "The model hit the output limit before completing the task. Please try again with a shorter request or a different model.";
@@ -484,6 +499,11 @@ export const codeAgentFunction = inngest.createFunction(
 
         const lastAssistantMessageText =
           lastAssistantTextMessageContent(result);
+
+        if (lastAssistantMessageText) {
+          network.state.data.lastAssistantMessage =
+            lastAssistantMessageText.slice(0, 4000);
+        }
 
         if (lastAssistantMessageText?.includes("<task_summary>")) {
           network.state.data.summary = lastAssistantMessageText;
@@ -550,6 +570,16 @@ export const codeAgentFunction = inngest.createFunction(
             llmModels.modelNames.codeFallback ?? llmModels.modelNames.code,
           );
         } catch (fallbackError) {
+          await prisma.agentFailure.create({
+            data: {
+              projectId: event.data.projectId,
+              sandboxId,
+              errorType: "tool_call_parse_failed",
+              errorMessage: String(fallbackError),
+              summaryFound: false,
+              filesCount: 0,
+            },
+          });
           await prisma.message.create({
             data: {
               projectId: event.data.projectId,
@@ -563,6 +593,16 @@ export const codeAgentFunction = inngest.createFunction(
           return { error: "tool_call_parse_failed" };
         }
       } else {
+        await prisma.agentFailure.create({
+          data: {
+            projectId: event.data.projectId,
+            sandboxId,
+            errorType: "tool_call_parse_failed",
+            errorMessage: String(error),
+            summaryFound: false,
+            filesCount: 0,
+          },
+        });
         await prisma.message.create({
           data: {
             projectId: event.data.projectId,
@@ -678,6 +718,28 @@ export const codeAgentFunction = inngest.createFunction(
       if (isError) {
         const message =
           result.state.data.error ?? "Something went wrong. Please try again.";
+        const filesCount = Object.keys(result.state.data.files || {}).length;
+        const summaryFound = Boolean(result.state.data.summary);
+        const errorType = result.state.data.error
+          ? "agent_error"
+          : !summaryFound
+            ? "missing_summary"
+            : filesCount === 0
+              ? "no_files"
+              : "unknown_error";
+
+        await prisma.agentFailure.create({
+          data: {
+            projectId: event.data.projectId,
+            sandboxId,
+            errorType,
+            errorMessage: result.state.data.error ?? null,
+            finishReason: result.state.data.finishReason ?? null,
+            lastAssistantMessage: result.state.data.lastAssistantMessage ?? null,
+            summaryFound,
+            filesCount,
+          },
+        });
         return await prisma.message.create({
           data: {
             projectId: event.data.projectId,

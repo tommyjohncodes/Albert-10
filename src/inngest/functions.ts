@@ -60,6 +60,31 @@ interface RawUsage {
   totalCostUsd?: number | string;
 }
 
+const AGENT_RUN_TIMEOUT_MS = Number(
+  process.env.AGENT_RUN_TIMEOUT_MS ?? 180_000,
+);
+
+const withTimeout = async <T>(promise: Promise<T>, ms: number, label: string) => {
+  let timeoutId: NodeJS.Timeout | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${ms}ms`));
+    }, ms);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+};
+
+const isTimeoutError = (error: unknown) => {
+  if (!(error instanceof Error)) return false;
+  return error.message.toLowerCase().includes("timed out");
+};
+
 const extractSandboxIdFromUrl = (sandboxUrl?: string | null) => {
   if (!sandboxUrl) return null;
   try {
@@ -168,6 +193,9 @@ const buildFailureReason = ({
   if (errorType === "tool_call_parse_failed") {
     return "The model returned malformed tool arguments.";
   }
+  if (errorType === "agent_timeout") {
+    return "The coding agent timed out waiting for the model.";
+  }
   if (errorType === "agent_error") {
     return "The agent reported an error during execution.";
   }
@@ -195,6 +223,9 @@ const buildFailureGuidance = ({
   }
   if (errorType === "tool_call_parse_failed") {
     return "Try again or switch models.";
+  }
+  if (errorType === "agent_timeout") {
+    return "Try again, or switch to a faster model.";
   }
   if (errorType === "agent_error") {
     return "Try again, or simplify the request.";
@@ -663,7 +694,11 @@ export const codeAgentFunction = inngest.createFunction(
       const state = buildAgentState();
       const agent = buildCodeAgent(model);
       const network = buildNetwork(agent, state);
-      const result = await network.run(event.data.value, { state });
+      const result = await withTimeout(
+        network.run(event.data.value, { state }),
+        AGENT_RUN_TIMEOUT_MS,
+        "coding-agent"
+      );
       return { result, modelName };
     };
 
@@ -675,6 +710,7 @@ export const codeAgentFunction = inngest.createFunction(
         llmModels.modelNames.code,
       );
     } catch (error) {
+      const timeout = isTimeoutError(error);
       if (isToolArgumentsParseError(error) && llmModels.codeFallback) {
         try {
           runResult = await runWithAgent(
@@ -682,18 +718,29 @@ export const codeAgentFunction = inngest.createFunction(
             llmModels.modelNames.codeFallback ?? llmModels.modelNames.code,
           );
         } catch (fallbackError) {
+          const fallbackTimeout = isTimeoutError(fallbackError);
+          const errorType = isToolArgumentsParseError(fallbackError)
+            ? "tool_call_parse_failed"
+            : fallbackTimeout
+              ? "agent_timeout"
+              : "agent_error";
+          const errorMessage =
+            errorType === "tool_call_parse_failed"
+              ? "The model returned malformed tool arguments. Please try again or switch models."
+              : errorType === "agent_timeout"
+                ? "The coding agent timed out while waiting for the model."
+                : "The model request failed. Please try again.";
           await recordAgentFailure({
             projectId: event.data.projectId,
             sandboxId,
-            errorType: "tool_call_parse_failed",
+            errorType,
             errorMessage: String(fallbackError),
             summaryFound: false,
             filesCount: 0,
           });
           const message = buildUserFailureMessage({
-            errorType: "tool_call_parse_failed",
-            errorMessage:
-              "The model returned malformed tool arguments. Please try again or switch models.",
+            errorType,
+            errorMessage,
             finishReason: null,
             summaryFound: false,
             filesCount: 0,
@@ -707,21 +754,31 @@ export const codeAgentFunction = inngest.createFunction(
             },
           });
           await cooldownSandbox();
-          return { error: "tool_call_parse_failed" };
+          return { error: errorType };
         }
       } else {
+        const errorType = isToolArgumentsParseError(error)
+          ? "tool_call_parse_failed"
+          : timeout
+            ? "agent_timeout"
+            : "agent_error";
+        const errorMessage =
+          errorType === "tool_call_parse_failed"
+            ? "The model returned malformed tool arguments. Please try again or switch models."
+            : errorType === "agent_timeout"
+              ? "The coding agent timed out while waiting for the model."
+              : "The model request failed. Please try again.";
         await recordAgentFailure({
           projectId: event.data.projectId,
           sandboxId,
-          errorType: "tool_call_parse_failed",
+          errorType,
           errorMessage: String(error),
           summaryFound: false,
           filesCount: 0,
         });
         const message = buildUserFailureMessage({
-          errorType: "tool_call_parse_failed",
-          errorMessage:
-            "The model returned malformed tool arguments. Please try again or switch models.",
+          errorType,
+          errorMessage,
           finishReason: null,
           summaryFound: false,
           filesCount: 0,
@@ -735,7 +792,7 @@ export const codeAgentFunction = inngest.createFunction(
           },
         });
         await cooldownSandbox();
-        return { error: "tool_call_parse_failed" };
+        return { error: errorType };
       }
     }
 

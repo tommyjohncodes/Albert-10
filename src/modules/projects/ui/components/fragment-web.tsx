@@ -16,7 +16,6 @@ export function FragmentWeb({ data }: Props) {
   );
   const lastWakeAtRef = useRef(0);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  const containerRef = useRef<HTMLDivElement | null>(null);
   const { isPicking, setPreviewTarget } = useElementPicker();
 
   const previewOrigin = useMemo(() => {
@@ -119,7 +118,7 @@ export function FragmentWeb({ data }: Props) {
   }, [onRefresh, onOpenInNewTab]);
 
   return (
-    <div ref={containerRef} className="flex flex-col w-full h-full">
+    <div className="flex flex-col w-full h-full">
       <div className="relative flex-1">
         {isPicking && (
           <div className="pointer-events-none absolute inset-0 z-10 flex items-start justify-center pt-6">

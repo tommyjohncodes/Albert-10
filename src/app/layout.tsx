@@ -1,16 +1,17 @@
 import type { Metadata } from "next";
 import { ThemeProvider } from "next-themes";
 import { ClerkProvider } from "@clerk/nextjs";
-import { Geist_Mono, Public_Sans } from "next/font/google";
+import { Geist_Mono, IBM_Plex_Sans } from "next/font/google";
 
 import { Toaster } from "@/components/ui/sonner";
 import { TRPCReactProvider } from "@/trpc/client";
 
 import "./globals.css";
 
-const publicSans = Public_Sans({
+const ibmPlexSans = IBM_Plex_Sans({
   variable: "--font-sans",
   subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
 });
 
 const geistMono = Geist_Mono({
@@ -45,7 +46,7 @@ export default function RootLayout({
       <TRPCReactProvider>
         <html lang="en" suppressHydrationWarning>
           <body
-            className={`${publicSans.variable} ${geistMono.variable} antialiased font-sans`}
+            className={`${ibmPlexSans.variable} ${geistMono.variable} antialiased font-sans`}
           >
             <ThemeProvider
               attribute="class"

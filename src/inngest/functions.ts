@@ -129,6 +129,11 @@ const MAX_AGENT_HISTORY_RESULTS = 6;
 const DEFAULT_AGENT_TIMEOUT_MS = 300_000;
 const DEFAULT_RESPONSE_TIMEOUT_MS = 45_000;
 const DEFAULT_CONTEXT_TIMEOUT_MS = 20_000;
+const TERMINAL_COMMAND_TIMEOUT_MS = 120_000;
+const BLOCKED_COMMAND_PATTERNS = [
+  /\bnpm\s+run\s+(dev|start|build)\b/i,
+  /\bnext\s+(dev|start|build)\b/i,
+];
 
 const truncateText = (value: string, maxChars: number) => {
   if (value.length <= maxChars) {
@@ -709,20 +714,28 @@ export const codeAgentFunction = inngest.createFunction(
           command: z.string(),
         }),
         handler: async ({ command }, { step }) => {
+          if (BLOCKED_COMMAND_PATTERNS.some((pattern) => pattern.test(command))) {
+            await createProgressMessage(`Blocked command: ${extractCommandName(command)}`);
+            return "Command blocked by policy. Do not run dev/build/start commands.";
+          }
           await createProgressMessage(`Ran command: ${extractCommandName(command)}`);
           return await step?.run("terminal", async () => {
             const buffers = { stdout: "", stderr: "" };
 
             try {
               const sandbox = await getSandbox(sandboxId, SANDBOX_RUN_TIMEOUT);
-              const result = await sandbox.commands.run(command, {
-                onStdout: (data: string) => {
-                  buffers.stdout += data;
-                },
-                onStderr: (data: string) => {
-                  buffers.stderr += data;
-                }
-              });
+              const result = await runWithTimeout(
+                sandbox.commands.run(command, {
+                  onStdout: (data: string) => {
+                    buffers.stdout += data;
+                  },
+                  onStderr: (data: string) => {
+                    buffers.stderr += data;
+                  },
+                }),
+                TERMINAL_COMMAND_TIMEOUT_MS,
+                "Terminal command timed out",
+              );
               return truncateText(result.stdout ?? "", MAX_TOOL_OUTPUT_CHARS);
             } catch (e) {
               console.error(
@@ -972,10 +985,14 @@ export const codeAgentFunction = inngest.createFunction(
       const state = buildAgentState();
       const agent = buildCodeAgent(model);
       const network = buildNetwork(agent, state);
-      const runPromise = network.run(runInput, {
-        state,
-        streaming: publishStream ? { publish: publishStream } : undefined,
-      });
+      const runPromise = step.run("code-agent", async () =>
+        network.run(runInput, {
+          state,
+          streaming: publishStream
+            ? { publish: publishStream, simulateChunking: false }
+            : undefined,
+        }),
+      );
       const result =
         agentTimeoutMs > 0
           ? await runWithTimeout(runPromise, agentTimeoutMs, "Coding agent run")

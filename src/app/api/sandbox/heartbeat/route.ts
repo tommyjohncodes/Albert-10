@@ -128,7 +128,7 @@ export async function POST(req: Request) {
       sandboxUrl,
       pickerReload: pickerStatus.updated,
     });
-  } catch (error) {
+  } catch {
     try {
       const projectFragments = await prisma.fragment.findMany({
         where: {

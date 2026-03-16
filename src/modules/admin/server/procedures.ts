@@ -423,7 +423,11 @@ export const adminRouter = createTRPCRouter({
     .query(async ({ input }) => {
       const activeCutoff = getActiveSandboxCutoff();
       const agentFailureClient = (
-        prisma as unknown as { agentFailure?: { findMany: Function } }
+        prisma as unknown as {
+          agentFailure?: {
+            findMany: (args: unknown) => Promise<unknown[]>;
+          };
+        }
       ).agentFailure;
       const agentFailureQuery = agentFailureClient?.findMany
         ? agentFailureClient.findMany({
@@ -741,7 +745,11 @@ export const adminRouter = createTRPCRouter({
     .query(async ({ input }) => {
       const activeCutoff = getActiveSandboxCutoff();
       const agentFailureClient = (
-        prisma as unknown as { agentFailure?: { findMany: Function } }
+        prisma as unknown as {
+          agentFailure?: {
+            findMany: (args: unknown) => Promise<unknown[]>;
+          };
+        }
       ).agentFailure;
       const agentFailureQuery = agentFailureClient?.findMany
         ? agentFailureClient.findMany({

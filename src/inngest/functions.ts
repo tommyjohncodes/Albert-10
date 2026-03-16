@@ -10,6 +10,7 @@ import {
   type AgentResult as AgentResultType,
   type Message,
   type Tool,
+  type ToolResultMessage,
   createState,
 } from "@inngest/agent-kit";
 
@@ -186,7 +187,12 @@ const deserializeAgentResults = (
         return null;
       }
       const createdAt = record.createdAt ? new Date(record.createdAt) : new Date();
-      return new AgentResult(record.agentName, record.output, record.toolCalls, createdAt);
+      return new AgentResult(
+        record.agentName,
+        record.output,
+        record.toolCalls as ToolResultMessage[],
+        createdAt,
+      );
     })
     .filter((item): item is AgentResult => Boolean(item))
     .slice(-limit);
@@ -379,8 +385,9 @@ const recordAgentFailure = async (data: {
   filesCount: number;
 }) => {
   try {
-    const client = (prisma as unknown as { agentFailure?: { create: Function } })
-      .agentFailure;
+    const client = (prisma as unknown as {
+      agentFailure?: { create: (args: { data: unknown }) => Promise<unknown> };
+    }).agentFailure;
     if (!client?.create) return;
     await client.create({ data });
   } catch (error) {
@@ -1025,7 +1032,7 @@ export const codeAgentFunction = inngest.createFunction(
       return { result, modelName };
     };
 
-    let runResult: { result: any; modelName: string | null };
+    let runResult: { result: unknown; modelName: string | null };
 
     try {
       runResult = await runWithAgent(

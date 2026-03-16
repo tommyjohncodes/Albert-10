@@ -186,12 +186,13 @@ export const MessageCard = ({
   content,
   role,
   fragment,
-  createdAt: _createdAt,
+  createdAt,
   isActiveFragment,
   onFragmentClick,
   type,
   progressItems,
 }: MessageCardProps) => {
+  void createdAt;
   if (role === "ASSISTANT") {
     return (
       <AssistantMessage

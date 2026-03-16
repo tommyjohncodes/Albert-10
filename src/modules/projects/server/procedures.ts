@@ -76,7 +76,8 @@ export const projectsRouter = createTRPCRouter({
       const displayTitle =
         existingProject.messages[0]?.fragment?.title ?? existingProject.name;
 
-      const { messages: _messages, ...project } = existingProject;
+      const { messages, ...project } = existingProject;
+      void messages;
 
       return {
         ...project,
@@ -124,7 +125,8 @@ export const projectsRouter = createTRPCRouter({
       return projects.map((project) => {
         const displayTitle =
           project.messages[0]?.fragment?.title ?? project.name;
-        const { messages: _messages, ...rest } = project;
+        const { messages, ...rest } = project;
+        void messages;
         return { ...rest, displayTitle };
       });
     }),

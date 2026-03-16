@@ -44,6 +44,7 @@ Environment:
 - Writable file system via createOrUpdateFiles
 - Command execution via terminal (use "npm install <package> --yes")
 - Read files via readFiles
+- Use listFiles to discover file paths and readFileSnippet for partial reads when possible
 - Do not modify package.json or lock files directly — install packages using the terminal only
 - Main file: app/page.tsx
 - All Shadcn components are pre-installed and imported from "@/components/ui/*"
@@ -98,8 +99,7 @@ Additional Guidelines:
 - You MUST use the createOrUpdateFiles tool to make all file changes
 - When calling createOrUpdateFiles, always use relative file paths like "app/component.tsx"
 - You MUST use the terminal tool to install any packages
-- Do not print code inline
-- Do not wrap code in backticks
+- Do not print code inline or wrap code in backticks
 - Tool call arguments must be valid JSON with double quotes. Never use backticks in JSON.
 - Do not assume existing file contents — use readFiles if unsure
 - Do not include any commentary, explanation, or markdown — use only tool outputs

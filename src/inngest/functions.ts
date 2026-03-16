@@ -132,6 +132,20 @@ const truncateText = (value: string, maxChars: number) => {
 const clampNumber = (value: number, min: number, max: number) =>
   Math.min(Math.max(value, min), max);
 
+const sanitizeRelativePath = (value?: string) => {
+  if (!value) {
+    return ".";
+  }
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.startsWith("/") || trimmed.includes("..")) {
+    return ".";
+  }
+  if (!/^[\w./-]+$/.test(trimmed)) {
+    return ".";
+  }
+  return trimmed;
+};
+
 const parseTimeoutMs = (value: string | undefined, fallback: number) => {
   if (!value) {
     return fallback;
@@ -680,6 +694,31 @@ export const codeAgentFunction = inngest.createFunction(
             network.state.data.files = newFiles;
           }
         }
+      }),
+      createTool({
+        name: "listFiles",
+        description: "List project files from the workspace",
+        parameters: z.object({
+          root: z.string().optional(),
+          maxDepth: z.number().int().min(1).max(6).optional(),
+          limit: z.number().int().min(1).max(500).optional(),
+        }),
+        handler: async ({ root, maxDepth, limit }, { step }) => {
+          const safeRoot = sanitizeRelativePath(root);
+          const depth = clampNumber(maxDepth ?? 4, 1, 6);
+          const maxItems = clampNumber(limit ?? 300, 1, 500);
+          await createProgressMessage(`Listing files in ${safeRoot}`);
+          return await step?.run("listFiles", async () => {
+            try {
+              const sandbox = await getSandbox(sandboxId, SANDBOX_RUN_TIMEOUT);
+              const command = `bash -lc 'cd /home/user && find ${safeRoot} -maxdepth ${depth} -type f 2>/dev/null | sed \"s|^./||\" | head -n ${maxItems}'`;
+              const result = await sandbox.commands.run(command);
+              return truncateText(result.stdout ?? "", MAX_TOOL_OUTPUT_CHARS);
+            } catch (e) {
+              return truncateText("Error: " + e, MAX_TOOL_OUTPUT_CHARS);
+            }
+          });
+        },
       }),
       createTool({
         name: "readFiles",

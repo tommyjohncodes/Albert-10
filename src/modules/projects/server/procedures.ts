@@ -176,10 +176,15 @@ export const projectsRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const orgId = await resolveOrgIdForUser(
-        ctx.auth.userId,
-        ctx.auth.orgId ?? null
-      );
+      let orgId: string | null = null;
+      try {
+        orgId = await resolveOrgIdForUser(
+          ctx.auth.userId,
+          ctx.auth.orgId ?? null
+        );
+      } catch (error) {
+        console.error("[projects.create] Failed to resolve org ID", error);
+      }
 
       const createdProject = await prisma.project.create({
         data: {
@@ -198,15 +203,28 @@ export const projectsRouter = createTRPCRouter({
         }
       });
 
-      await inngest.send({
-        name: "code-agent/run",
-        data: {
-          value: input.value,
-          projectId: createdProject.id,
-          orgId: createdProject.orgId,
-          userId: ctx.auth.userId,
-        },
-      });
+      try {
+        await inngest.send({
+          name: "code-agent/run",
+          data: {
+            value: input.value,
+            projectId: createdProject.id,
+            orgId: createdProject.orgId,
+            userId: ctx.auth.userId,
+          },
+        });
+      } catch (error) {
+        console.error("[projects.create] Failed to enqueue code agent run", error);
+        await prisma.message.create({
+          data: {
+            projectId: createdProject.id,
+            content:
+              "I couldn't start the coding task because the background worker is unavailable. Please make sure the Inngest dev server is running, then try again.",
+            role: "ASSISTANT",
+            type: "ERROR",
+          },
+        });
+      }
 
       return createdProject;
     }),

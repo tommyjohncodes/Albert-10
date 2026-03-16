@@ -4,7 +4,7 @@ import { useAuth } from "@clerk/nextjs";
 import { useAgent } from "@inngest/use-agent";
 
 import { useTRPC } from "@/trpc/client";
-import { FragmentPreview } from "../types";
+import { FragmentPreview } from "../../types";
 
 import { MessageCard } from "./message-card";
 import { MessageForm } from "./message-form";

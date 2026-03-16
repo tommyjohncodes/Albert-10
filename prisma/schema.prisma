@@ -173,5 +173,11 @@ model PlatformSettings {
   vercelAccessToken String?
   vercelTokenUpdatedAt DateTime?
   updatedByUserId String?
+  tokenEfficiencyMode Boolean @default(false)
+  agentHistoryLimit Int?
+  contextSummaryMaxChars Int?
+  agentTimeoutMs Int?
+  responseTimeoutMs Int?
+  contextTimeoutMs Int?
   updatedAt DateTime @default(now()) @updatedAt
 }

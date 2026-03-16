@@ -9,7 +9,13 @@ import { aggregateUsage } from "@/lib/llm-usage";
 import { aggregateSandboxUsage } from "@/lib/sandbox-usage";
 import { getUserUsageMetrics } from "@/lib/user-usage-metrics";
 import { decryptSecret, encryptSecret, hasEncryptionKey } from "@/lib/secrets";
-import { getPlatformSettings, upsertPlatformVercelToken } from "@/lib/platform-settings";
+import {
+  getPlatformSettings,
+  resolveTokenEfficiencySettings,
+  TOKEN_EFFICIENCY_DEFAULTS,
+  upsertPlatformVercelToken,
+  upsertTokenEfficiencySettings,
+} from "@/lib/platform-settings";
 import { adminProcedure, createTRPCRouter } from "@/trpc/init";
 
 const ProviderSchema = z.enum(["openrouter"]);
@@ -25,6 +31,15 @@ const OrgSettingsInputSchema = z.object({
 
 const VercelTokenInputSchema = z.object({
   token: z.string().optional(),
+});
+
+const TokenEfficiencyInputSchema = z.object({
+  enabled: z.boolean(),
+  agentHistoryLimit: z.number().int().min(1).max(20),
+  contextSummaryMaxChars: z.number().int().min(300).max(3000),
+  agentTimeoutMs: z.number().int().min(0).max(600000),
+  responseTimeoutMs: z.number().int().min(0).max(120000),
+  contextTimeoutMs: z.number().int().min(0).max(120000),
 });
 
 const ListInputSchema = z
@@ -833,6 +848,7 @@ export const adminRouter = createTRPCRouter({
 
   getPlatformSettings: adminProcedure.query(async () => {
     const settings = await getPlatformSettings();
+    const efficiency = resolveTokenEfficiencySettings(settings);
 
     let hasToken = false;
     if (settings?.vercelAccessToken) {
@@ -847,6 +863,13 @@ export const adminRouter = createTRPCRouter({
       hasToken,
       tokenUpdatedAt: settings?.vercelTokenUpdatedAt?.toISOString() ?? null,
       encryptionReady: hasEncryptionKey(),
+      tokenEfficiencyMode: efficiency.enabled,
+      agentHistoryLimit: efficiency.agentHistoryLimit,
+      contextSummaryMaxChars: efficiency.contextSummaryMaxChars,
+      agentTimeoutMs: efficiency.agentTimeoutMs,
+      responseTimeoutMs: efficiency.responseTimeoutMs,
+      contextTimeoutMs: efficiency.contextTimeoutMs,
+      defaults: TOKEN_EFFICIENCY_DEFAULTS,
     };
   }),
 
@@ -857,6 +880,24 @@ export const adminRouter = createTRPCRouter({
 
       await upsertPlatformVercelToken({
         token,
+        updatedByUserId: ctx.auth.userId,
+      });
+
+      return {
+        success: true,
+      };
+    }),
+
+  updateTokenEfficiencySettings: adminProcedure
+    .input(TokenEfficiencyInputSchema)
+    .mutation(async ({ ctx, input }) => {
+      await upsertTokenEfficiencySettings({
+        enabled: input.enabled,
+        agentHistoryLimit: input.agentHistoryLimit,
+        contextSummaryMaxChars: input.contextSummaryMaxChars,
+        agentTimeoutMs: input.agentTimeoutMs,
+        responseTimeoutMs: input.responseTimeoutMs,
+        contextTimeoutMs: input.contextTimeoutMs,
         updatedByUserId: ctx.auth.userId,
       });
 

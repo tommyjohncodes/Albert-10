@@ -129,6 +129,7 @@ const MAX_AGENT_HISTORY_RESULTS = 6;
 const DEFAULT_AGENT_TIMEOUT_MS = 300_000;
 const DEFAULT_RESPONSE_TIMEOUT_MS = 45_000;
 const DEFAULT_CONTEXT_TIMEOUT_MS = 20_000;
+const DEFAULT_PRIMARY_MODEL_TIMEOUT_MS = 120_000;
 const TERMINAL_COMMAND_TIMEOUT_MS = 120_000;
 const BLOCKED_COMMAND_PATTERNS = [
   /\bnpm\s+run\s+(dev|start|build)\b/i,
@@ -478,6 +479,18 @@ const resolveAgentErrorType = (error: unknown) => {
   return "agent_error";
 };
 
+const isTimeoutError = (error: unknown) =>
+  error instanceof Error && error.message.toLowerCase().includes("timed out");
+
+const logLlmTiming = (label: string, modelName: string | null, startedAt: number) => {
+  const durationMs = Date.now() - startedAt;
+  console.info("[LLM timing]", {
+    label,
+    modelName: modelName ?? "unknown",
+    durationMs,
+  });
+};
+
 const resolveAgentErrorMessage = (errorType: string) => {
   if (errorType === "tool_call_parse_failed") {
     return "The model returned malformed tool arguments. Please try again or switch models.";
@@ -645,6 +658,10 @@ export const codeAgentFunction = inngest.createFunction(
     const contextTimeoutMs = tokenEfficiencyEnabled
       ? parseTimeoutMs(efficiencySettings.contextTimeoutMs, DEFAULT_CONTEXT_TIMEOUT_MS)
       : parseTimeoutMs(process.env.LLM_CONTEXT_TIMEOUT_MS, DEFAULT_CONTEXT_TIMEOUT_MS);
+    const primaryModelTimeoutMs = parseTimeoutMs(
+      process.env.LLM_CODE_PRIMARY_TIMEOUT_MS,
+      DEFAULT_PRIMARY_MODEL_TIMEOUT_MS,
+    );
 
     const llmModels = await getLlmModels(orgId);
 
@@ -981,11 +998,14 @@ export const codeAgentFunction = inngest.createFunction(
     const runWithAgent = async (
       model: typeof llmModels.code,
       modelName: string | null,
+      timeoutOverrideMs: number | null,
+      stepLabel: string,
     ) => {
       const state = buildAgentState();
       const agent = buildCodeAgent(model);
       const network = buildNetwork(agent, state);
-      const runPromise = step.run("code-agent", async () =>
+      const startedAt = Date.now();
+      const runPromise = step.run(stepLabel, async () =>
         network.run(runInput, {
           state,
           streaming: publishStream
@@ -993,10 +1013,15 @@ export const codeAgentFunction = inngest.createFunction(
             : undefined,
         }),
       );
+      const timeoutMs =
+        typeof timeoutOverrideMs === "number" && timeoutOverrideMs > 0
+          ? timeoutOverrideMs
+          : agentTimeoutMs;
       const result =
-        agentTimeoutMs > 0
-          ? await runWithTimeout(runPromise, agentTimeoutMs, "Coding agent run")
+        timeoutMs > 0
+          ? await runWithTimeout(runPromise, timeoutMs, "Coding agent run")
           : await runPromise;
+      logLlmTiming("code-agent", modelName, startedAt);
       return { result, modelName };
     };
 
@@ -1006,13 +1031,57 @@ export const codeAgentFunction = inngest.createFunction(
       runResult = await runWithAgent(
         llmModels.code,
         llmModels.modelNames.code,
+        primaryModelTimeoutMs,
+        `code-agent:${llmModels.modelNames.code ?? "primary"}`,
       );
     } catch (error) {
-      if (isToolArgumentsParseError(error) && llmModels.codeFallback) {
+      if (isTimeoutError(error) && llmModels.codeFallback) {
+        await createProgressMessage(
+          "Primary model is slow. Switching to fallback model...",
+        );
         try {
           runResult = await runWithAgent(
             llmModels.codeFallback,
             llmModels.modelNames.codeFallback ?? llmModels.modelNames.code,
+            null,
+            `code-agent:${llmModels.modelNames.codeFallback ?? "fallback"}`,
+          );
+        } catch (fallbackError) {
+          const errorType = resolveAgentErrorType(fallbackError);
+          const errorMessage = resolveAgentErrorMessage(errorType);
+          await recordAgentFailure({
+            projectId: event.data.projectId,
+            sandboxId,
+            errorType,
+            errorMessage: String(fallbackError),
+            summaryFound: false,
+            filesCount: 0,
+          });
+          const message = buildUserFailureMessage({
+            errorType,
+            errorMessage,
+            finishReason: null,
+            summaryFound: false,
+            filesCount: 0,
+          });
+          await prisma.message.create({
+            data: {
+              projectId: event.data.projectId,
+              content: message,
+              role: "ASSISTANT",
+              type: "ERROR",
+            },
+          });
+          await cooldownSandbox();
+          return { error: errorType };
+        }
+      } else if (isToolArgumentsParseError(error) && llmModels.codeFallback) {
+        try {
+          runResult = await runWithAgent(
+            llmModels.codeFallback,
+            llmModels.modelNames.codeFallback ?? llmModels.modelNames.code,
+            null,
+            `code-agent:${llmModels.modelNames.codeFallback ?? "fallback"}`,
           );
         } catch (fallbackError) {
           const errorType = resolveAgentErrorType(fallbackError);
@@ -1116,9 +1185,11 @@ export const codeAgentFunction = inngest.createFunction(
         model: llmModels.title,
       });
 
-      fragmentTitleResult = await fragmentTitleGenerator.run(
-        result.state.data.summary,
+      const titleStart = Date.now();
+      fragmentTitleResult = await step.run("llm-fragment-title", async () =>
+        fragmentTitleGenerator.run(result.state.data.summary),
       );
+      logLlmTiming("fragment-title", llmModels.modelNames.title, titleStart);
       fragmentTitle = parseAgentOutput(fragmentTitleResult.output);
     }
 
@@ -1135,7 +1206,10 @@ export const codeAgentFunction = inngest.createFunction(
       await createProgressMessage("Generating response...");
 
       try {
-        const responsePromise = responseGenerator.run(result.state.data.summary);
+        const responseStart = Date.now();
+        const responsePromise = step.run("llm-response", async () =>
+          responseGenerator.run(result.state.data.summary),
+        );
         responseResult =
           responseTimeoutMs > 0
             ? await runWithTimeout(
@@ -1144,6 +1218,7 @@ export const codeAgentFunction = inngest.createFunction(
                 "Response generation",
               )
             : await responsePromise;
+        logLlmTiming("response", llmModels.modelNames.response, responseStart);
         responseOutput = responseResult.output;
         responseUsage = extractUsageFromAgentResult(responseResult);
       } catch (error) {
@@ -1173,12 +1248,15 @@ export const codeAgentFunction = inngest.createFunction(
       });
 
       try {
-        const contextPromise = contextSummaryGenerator.run(
-          JSON.stringify({
-            previous_summary: priorContextSummary ?? "",
-            user_request: requestValue,
-            task_summary: resolvedSummary,
-          }),
+        const contextStart = Date.now();
+        const contextPromise = step.run("llm-context-summary", async () =>
+          contextSummaryGenerator.run(
+            JSON.stringify({
+              previous_summary: priorContextSummary ?? "",
+              user_request: requestValue,
+              task_summary: resolvedSummary,
+            }),
+          ),
         );
         contextSummaryResult =
           contextTimeoutMs > 0
@@ -1188,6 +1266,7 @@ export const codeAgentFunction = inngest.createFunction(
                 "Context summary generation",
               )
             : await contextPromise;
+        logLlmTiming("context-summary", llmModels.modelNames.response, contextStart);
       } catch (error) {
         console.warn("Context summary generation failed or timed out", error);
         contextSummaryResult = null;

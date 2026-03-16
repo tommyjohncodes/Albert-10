@@ -17,7 +17,7 @@ export interface LlmConfig {
 
 const OPENROUTER_BASE_URL_DEFAULT = "https://openrouter.ai/api/v1/";
 const DEFAULT_MAX_TOKENS = {
-  code: 8192,
+  code: 4096,
   title: 256,
   response: 1024,
 };

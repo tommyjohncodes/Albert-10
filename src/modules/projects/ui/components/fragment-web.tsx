@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { FragmentPreview } from "../types";
+import { FragmentPreview } from "../../types";
 import { useElementPicker } from "./element-picker-context";
 
 interface Props {

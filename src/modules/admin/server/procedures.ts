@@ -286,6 +286,7 @@ export const adminRouter = createTRPCRouter({
 
       try {
         const client = getClerkClient();
+        if (!client) throw new Error("Clerk client not available");
         const organizationsResponse = await client.organizations.getOrganizationList({
           limit: input?.limit ?? 100,
           offset: input?.offset ?? 0,
@@ -486,6 +487,7 @@ export const adminRouter = createTRPCRouter({
 
       try {
         const client = getClerkClient();
+        if (!client) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Clerk client not available" });
         const [organizationResponse, memberships] = await Promise.all([
           client.organizations.getOrganization({
             organizationId: input.orgId,
@@ -617,6 +619,7 @@ export const adminRouter = createTRPCRouter({
 
       try {
         const client = getClerkClient();
+        if (!client) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Clerk client not available" });
         const usersResponse = await client.users.getUserList({
           limit: input?.limit ?? 100,
           offset: input?.offset ?? 0,
@@ -802,6 +805,7 @@ export const adminRouter = createTRPCRouter({
 
       try {
         const client = getClerkClient();
+        if (!client) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Clerk client not available" });
         const [userResponse, membershipsResponse] = await Promise.all([
           client.users.getUser(input.userId),
           client.users.getOrganizationMembershipList({

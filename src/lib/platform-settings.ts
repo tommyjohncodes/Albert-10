@@ -19,15 +19,8 @@ export async function getPlatformSettings() {
   });
 }
 
-/** Accepts Prisma result or serialized shape (e.g. from Inngest steps where dates become strings). */
 export function resolveTokenEfficiencySettings(
-  settings: (Omit<
-    Awaited<ReturnType<typeof getPlatformSettings>>,
-    "updatedAt" | "vercelTokenUpdatedAt"
-  > & {
-    updatedAt?: Date | string;
-    vercelTokenUpdatedAt?: Date | string | null;
-  }) | null
+  settings: Awaited<ReturnType<typeof getPlatformSettings>> | null
 ) {
   return {
     enabled: settings?.tokenEfficiencyMode ?? TOKEN_EFFICIENCY_DEFAULTS.enabled,

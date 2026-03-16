@@ -3,7 +3,7 @@ import { CheckCircle2Icon, ChevronRightIcon, Code2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Card } from "@/components/ui/card";
 import { MessageRole, MessageType } from "@/generated/prisma";
-import { FragmentPreview } from "../types";
+import { FragmentPreview } from "../../types";
 import { ProgressGroup } from "./progress-group";
 
 interface UserMessageProps {

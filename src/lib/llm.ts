@@ -204,18 +204,18 @@ export async function getLlmModels(orgId?: string | null) {
     code: buildModel(config.provider, config.codeModel, orgOpenRouterApiKey, {
       temperature: 0.1,
       max_tokens: maxTokens.code,
-    }),
+    } as Parameters<typeof buildModel>[3]),
     title: buildModel(config.provider, config.titleModel, orgOpenRouterApiKey, {
       max_tokens: maxTokens.title,
-    }),
+    } as Parameters<typeof buildModel>[3]),
     response: buildModel(config.provider, config.responseModel, orgOpenRouterApiKey, {
       max_tokens: maxTokens.response,
-    }),
+    } as Parameters<typeof buildModel>[3]),
     codeFallback: fallbackCodeModelName
       ? buildModel(config.provider, fallbackCodeModelName, orgOpenRouterApiKey, {
           temperature: 0.1,
           max_tokens: maxTokens.code,
-        })
+        } as Parameters<typeof buildModel>[3])
       : null,
   };
 }

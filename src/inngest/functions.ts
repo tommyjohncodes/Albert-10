@@ -648,7 +648,9 @@ export const codeAgentFunction = inngest.createFunction(
       }
     });
 
-    const efficiencySettings = resolveTokenEfficiencySettings(platformSettings);
+    const efficiencySettings = resolveTokenEfficiencySettings(
+      platformSettings as Awaited<ReturnType<typeof getPlatformSettings>> | null,
+    );
     const tokenEfficiencyEnabled = efficiencySettings.enabled;
     const historyLimit = tokenEfficiencyEnabled
       ? clampNumber(efficiencySettings.agentHistoryLimit, 1, 20)
@@ -1414,12 +1416,12 @@ export const codeAgentFunction = inngest.createFunction(
           where: { projectId: event.data.projectId },
           update: {
             summary: fallbackSummary ?? "Project context summary pending.",
-            results: nextHistoryResults ?? undefined,
+            results: (nextHistoryResults ?? undefined) as never,
           },
           create: {
             projectId: event.data.projectId,
             summary: fallbackSummary ?? "Project context summary pending.",
-            results: nextHistoryResults ?? undefined,
+            results: (nextHistoryResults ?? undefined) as never,
           },
         });
       });

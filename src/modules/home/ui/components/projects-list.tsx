@@ -25,8 +25,10 @@ import { toast } from "sonner";
 import { Input } from "@/components/ui/input";
 import type { Project } from "@/generated/prisma";
 
+type ProjectWithDisplayTitle = Project & { displayTitle?: string };
+
 interface ProjectCardProps {
-  project: Project;
+  project: ProjectWithDisplayTitle;
   isDeleting: boolean;
   onDelete: (projectId: string) => void;
 }

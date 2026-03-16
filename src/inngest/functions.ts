@@ -25,6 +25,10 @@ import {
   SANDBOX_PREVIEW_PORT,
 } from "@/lib/sandbox-preview";
 import {
+  getPlatformSettings,
+  resolveTokenEfficiencySettings,
+} from "@/lib/platform-settings";
+import {
   CONTEXT_SUMMARY_PROMPT,
   FRAGMENT_TITLE_PROMPT,
   PROMPT,
@@ -156,7 +160,10 @@ type SerializedAgentResult = {
   checksum?: string;
 };
 
-const deserializeAgentResults = (value: unknown): AgentResult[] => {
+const deserializeAgentResults = (
+  value: unknown,
+  limit: number = MAX_AGENT_HISTORY_RESULTS,
+): AgentResult[] => {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -173,12 +180,15 @@ const deserializeAgentResults = (value: unknown): AgentResult[] => {
       return new AgentResult(record.agentName, record.output, record.toolCalls, createdAt);
     })
     .filter((item): item is AgentResult => Boolean(item))
-    .slice(-MAX_AGENT_HISTORY_RESULTS);
+    .slice(-limit);
 };
 
-const serializeAgentResults = (results: AgentResultType[]) => {
+const serializeAgentResults = (
+  results: AgentResultType[],
+  limit: number = MAX_AGENT_HISTORY_RESULTS,
+) => {
   return results
-    .slice(-MAX_AGENT_HISTORY_RESULTS)
+    .slice(-limit)
     .map((item) => {
       if (!item || typeof (item as AgentResult).export !== "function") {
         return null;
@@ -192,11 +202,14 @@ const serializeAgentResults = (results: AgentResultType[]) => {
     .filter(Boolean);
 };
 
-const parseTimeoutMs = (value: string | undefined, fallback: number) => {
-  if (!value) {
+const parseTimeoutMs = (value: string | number | undefined | null, fallback: number) => {
+  if (value === undefined || value === null || value === "") {
     return fallback;
   }
-  const parsed = Number.parseInt(value, 10);
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  const parsed = Number.parseInt(String(value), 10);
   if (Number.isFinite(parsed) && parsed >= 0) {
     return parsed;
   }
@@ -579,6 +592,33 @@ export const codeAgentFunction = inngest.createFunction(
       }
     };
 
+    const platformSettings = await step.run("get-platform-settings", async () => {
+      try {
+        return await getPlatformSettings();
+      } catch (error) {
+        console.warn("Failed to load platform settings", error);
+        return null;
+      }
+    });
+
+    const efficiencySettings = resolveTokenEfficiencySettings(platformSettings);
+    const tokenEfficiencyEnabled = efficiencySettings.enabled;
+    const historyLimit = tokenEfficiencyEnabled
+      ? clampNumber(efficiencySettings.agentHistoryLimit, 1, 20)
+      : MAX_AGENT_HISTORY_RESULTS;
+    const contextSummaryLimit = tokenEfficiencyEnabled
+      ? clampNumber(efficiencySettings.contextSummaryMaxChars, 300, 3000)
+      : MAX_CONTEXT_SUMMARY_LENGTH;
+    const agentTimeoutMs = tokenEfficiencyEnabled
+      ? parseTimeoutMs(efficiencySettings.agentTimeoutMs, DEFAULT_AGENT_TIMEOUT_MS)
+      : parseTimeoutMs(process.env.LLM_AGENT_TIMEOUT_MS, DEFAULT_AGENT_TIMEOUT_MS);
+    const responseTimeoutMs = tokenEfficiencyEnabled
+      ? parseTimeoutMs(efficiencySettings.responseTimeoutMs, DEFAULT_RESPONSE_TIMEOUT_MS)
+      : parseTimeoutMs(process.env.LLM_RESPONSE_TIMEOUT_MS, DEFAULT_RESPONSE_TIMEOUT_MS);
+    const contextTimeoutMs = tokenEfficiencyEnabled
+      ? parseTimeoutMs(efficiencySettings.contextTimeoutMs, DEFAULT_CONTEXT_TIMEOUT_MS)
+      : parseTimeoutMs(process.env.LLM_CONTEXT_TIMEOUT_MS, DEFAULT_CONTEXT_TIMEOUT_MS);
+
     const llmModels = await getLlmModels(orgId);
 
     const createProgressMessage = async (content: string) => {
@@ -611,10 +651,10 @@ export const codeAgentFunction = inngest.createFunction(
     });
 
     const priorContextSummary = projectContext?.summary
-      ? projectContext.summary.slice(0, MAX_CONTEXT_SUMMARY_LENGTH)
+      ? projectContext.summary.slice(0, contextSummaryLimit)
       : null;
 
-    const priorResults = deserializeAgentResults(projectContext?.results);
+    const priorResults = deserializeAgentResults(projectContext?.results, historyLimit);
     const seedMessages: Message[] = priorContextSummary
       ? [
           {
@@ -893,10 +933,6 @@ export const codeAgentFunction = inngest.createFunction(
       const state = buildAgentState();
       const agent = buildCodeAgent(model);
       const network = buildNetwork(agent, state);
-      const agentTimeoutMs = parseTimeoutMs(
-        process.env.LLM_AGENT_TIMEOUT_MS,
-        DEFAULT_AGENT_TIMEOUT_MS,
-      );
       const runPromise = network.run(event.data.value, { state });
       const result =
         agentTimeoutMs > 0
@@ -1037,10 +1073,6 @@ export const codeAgentFunction = inngest.createFunction(
       : null;
 
     if (!isError) {
-      const responseTimeoutMs = parseTimeoutMs(
-        process.env.LLM_RESPONSE_TIMEOUT_MS,
-        DEFAULT_RESPONSE_TIMEOUT_MS,
-      );
       await createProgressMessage("Generating response...");
 
       try {
@@ -1070,14 +1102,10 @@ export const codeAgentFunction = inngest.createFunction(
     let nextContextSummary: string | null = null;
     const nextHistoryResults =
       !isError && result.state?.results
-        ? serializeAgentResults(result.state.results)
+        ? serializeAgentResults(result.state.results, historyLimit)
         : null;
 
     if (resolvedSummary && !isError) {
-      const contextTimeoutMs = parseTimeoutMs(
-        process.env.LLM_CONTEXT_TIMEOUT_MS,
-        DEFAULT_CONTEXT_TIMEOUT_MS,
-      );
       const contextSummaryGenerator = createAgent({
         name: "context-summary-generator",
         description: "Generates a compact project context summary",
@@ -1108,10 +1136,10 @@ export const codeAgentFunction = inngest.createFunction(
 
       if (contextSummaryResult) {
         const parsedContextSummary = parseAgentOutput(contextSummaryResult.output);
-        if (parsedContextSummary) {
-          nextContextSummary = parsedContextSummary.slice(0, MAX_CONTEXT_SUMMARY_LENGTH);
-        }
+      if (parsedContextSummary) {
+        nextContextSummary = parsedContextSummary.slice(0, contextSummaryLimit);
       }
+    }
     }
 
     await step.run("record-llm-usage", async () => {
@@ -1228,7 +1256,7 @@ export const codeAgentFunction = inngest.createFunction(
 
     const fallbackSummary = nextContextSummary
       ?? priorContextSummary
-      ?? (resolvedSummary ? resolvedSummary.slice(0, MAX_CONTEXT_SUMMARY_LENGTH) : null);
+      ?? (resolvedSummary ? resolvedSummary.slice(0, contextSummaryLimit) : null);
 
     if (fallbackSummary || nextHistoryResults) {
       await step.run("save-project-context", async () => {

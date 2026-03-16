@@ -782,14 +782,22 @@ export const codeAgentFunction = inngest.createFunction(
         name: "listFiles",
         description: "List project files from the workspace",
         parameters: z.object({
-          root: z.string().optional(),
-          maxDepth: z.number().int().min(1).max(6).optional(),
-          limit: z.number().int().min(1).max(500).optional(),
+          root: z.string(),
+          maxDepth: z.number().int().min(1).max(6),
+          limit: z.number().int().min(1).max(500),
         }),
         handler: async ({ root, maxDepth, limit }, { step }) => {
           const safeRoot = sanitizeRelativePath(root);
-          const depth = clampNumber(maxDepth ?? 4, 1, 6);
-          const maxItems = clampNumber(limit ?? 300, 1, 500);
+          const depth = clampNumber(
+            Number.isFinite(maxDepth) ? maxDepth : 4,
+            1,
+            6,
+          );
+          const maxItems = clampNumber(
+            Number.isFinite(limit) ? limit : 300,
+            1,
+            500,
+          );
           await createProgressMessage(`Listing files in ${safeRoot}`);
           return await step?.run("listFiles", async () => {
             try {

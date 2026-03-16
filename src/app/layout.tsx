@@ -30,36 +30,47 @@ export const metadata: Metadata = {
   },
 };
 
+const clerkPublishableKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+
 export default function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const app = (
+    <TRPCReactProvider>
+      <ThemeProvider
+        attribute="class"
+        defaultTheme="system"
+        enableSystem
+        disableTransitionOnChange
+      >
+        <Toaster />
+        {children}
+      </ThemeProvider>
+    </TRPCReactProvider>
+  );
+
   return (
-    <ClerkProvider
-      appearance={{
-        variables: {
-          colorPrimary: "#1E90FF",
-        },
-      }}
-    >
-      <TRPCReactProvider>
-        <html lang="en" suppressHydrationWarning>
-          <body
-            className={`${ibmPlexSans.variable} ${geistMono.variable} antialiased font-sans`}
+    <html lang="en" suppressHydrationWarning>
+      <body
+        className={`${ibmPlexSans.variable} ${geistMono.variable} antialiased font-sans`}
+      >
+        {clerkPublishableKey ? (
+          <ClerkProvider
+            publishableKey={clerkPublishableKey}
+            appearance={{
+              variables: {
+                colorPrimary: "#1E90FF",
+              },
+            }}
           >
-            <ThemeProvider
-              attribute="class"
-              defaultTheme="system"
-              enableSystem
-              disableTransitionOnChange
-            >
-              <Toaster />
-              {children}
-            </ThemeProvider>
-          </body>
-        </html>
-      </TRPCReactProvider>
-    </ClerkProvider>
+            {app}
+          </ClerkProvider>
+        ) : (
+          app
+        )}
+      </body>
+    </html>
   );
 };

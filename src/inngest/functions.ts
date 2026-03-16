@@ -5,7 +5,8 @@ import {
   createTool,
   createNetwork,
   type Agent,
-  type AgentResult,
+  AgentResult,
+  type AgentResult as AgentResultType,
   type Message,
   type Tool,
   createState,
@@ -117,6 +118,7 @@ const MAX_CONTEXT_SUMMARY_LENGTH = 1200;
 const MAX_TOOL_OUTPUT_CHARS = 12000;
 const MAX_READ_FILE_CHARS = 12000;
 const MAX_READ_SNIPPET_CHARS = 8000;
+const MAX_AGENT_HISTORY_RESULTS = 6;
 const DEFAULT_AGENT_TIMEOUT_MS = 300_000;
 const DEFAULT_RESPONSE_TIMEOUT_MS = 45_000;
 const DEFAULT_CONTEXT_TIMEOUT_MS = 20_000;
@@ -803,7 +805,7 @@ export const codeAgentFunction = inngest.createFunction(
         result,
         network,
       }: {
-        result: AgentResult;
+        result: AgentResultType;
         network?: { state: { data: AgentState } };
       }) => {
         if (!network) {

@@ -115,6 +115,7 @@ model ProjectContext {
   id String @id @default(uuid())
   projectId String @unique
   summary String
+  results Json?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

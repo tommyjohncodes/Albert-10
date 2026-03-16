@@ -111,6 +111,15 @@ export const messagesRouter = createTRPCRouter({
           projectId: input.projectId,
           orgId: existingProject.orgId,
           userId: ctx.auth.userId,
+          channelKey: ctx.auth.userId,
+          threadId: input.projectId,
+          userMessage: {
+            id: createdMessage.id,
+            content: input.value,
+            role: "user",
+            state: { projectId: input.projectId },
+            clientTimestamp: new Date().toISOString(),
+          },
         },
       });
 

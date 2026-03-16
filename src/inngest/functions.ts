@@ -5,6 +5,7 @@ import {
   createTool,
   createNetwork,
   type Agent,
+  type AgentMessageChunk,
   AgentResult,
   type AgentResult as AgentResultType,
   type Message,
@@ -34,6 +35,7 @@ import {
   PROMPT,
   RESPONSE_PROMPT,
 } from "@/prompt";
+import { getAgentStreamChannel } from "@/inngest/realtime";
 
 import { inngest } from "./client";
 import { SANDBOX_RUN_TIMEOUT, SANDBOX_TIMEOUT } from "./types";
@@ -42,6 +44,7 @@ import { getSandbox, lastAssistantTextMessageContent, parseAgentOutput } from ".
 interface AgentState {
   summary: string;
   files: { [path: string]: string };
+  userId?: string;
   error?: string;
   finishReason?: string;
   lastAssistantMessage?: string;
@@ -483,7 +486,7 @@ const resolveAgentErrorMessage = (errorType: string) => {
 export const codeAgentFunction = inngest.createFunction(
   { id: "code-agent" },
   { event: "code-agent/run" },
-  async ({ event, step }) => {
+  async ({ event, step, publish }) => {
     const projectAccess = await step.run("get-project-access", async () => {
       const project = await prisma.project.findUnique({
         where: {
@@ -512,6 +515,25 @@ export const codeAgentFunction = inngest.createFunction(
     if (!resolvedUserId) {
       throw new Error("Project user ID is missing.");
     }
+
+    const requestValue =
+      typeof event.data.value === "string"
+        ? event.data.value
+        : typeof event.data.userMessage?.content === "string"
+          ? event.data.userMessage.content
+          : "";
+    const threadId =
+      typeof event.data.threadId === "string" && event.data.threadId.trim()
+        ? event.data.threadId.trim()
+        : event.data.projectId;
+    const channelKey =
+      typeof event.data.channelKey === "string" && event.data.channelKey.trim()
+        ? event.data.channelKey.trim()
+        : resolvedUserId;
+    const runInput =
+      event.data.userMessage && typeof event.data.userMessage.content === "string"
+        ? event.data.userMessage
+        : requestValue;
 
     const sandboxResult = await step.run("get-sandbox-id", async () => {
       const latestFragment = await prisma.fragment.findFirst({
@@ -670,10 +692,12 @@ export const codeAgentFunction = inngest.createFunction(
         {
           summary: "",
           files: {},
+          userId: resolvedUserId,
         },
         {
           messages: seedMessages,
           results: priorResults,
+          threadId,
         },
       );
 
@@ -926,6 +950,13 @@ export const codeAgentFunction = inngest.createFunction(
         },
       });
 
+    const publishStream =
+      typeof publish === "function" && channelKey
+        ? async (chunk: AgentMessageChunk) => {
+            await publish(getAgentStreamChannel(channelKey).agent_stream(chunk));
+          }
+        : null;
+
     const runWithAgent = async (
       model: typeof llmModels.code,
       modelName: string | null,
@@ -933,7 +964,10 @@ export const codeAgentFunction = inngest.createFunction(
       const state = buildAgentState();
       const agent = buildCodeAgent(model);
       const network = buildNetwork(agent, state);
-      const runPromise = network.run(event.data.value, { state });
+      const runPromise = network.run(runInput, {
+        state,
+        streaming: publishStream ? { publish: publishStream } : undefined,
+      });
       const result =
         agentTimeoutMs > 0
           ? await runWithTimeout(runPromise, agentTimeoutMs, "Coding agent run")
@@ -1117,7 +1151,7 @@ export const codeAgentFunction = inngest.createFunction(
         const contextPromise = contextSummaryGenerator.run(
           JSON.stringify({
             previous_summary: priorContextSummary ?? "",
-            user_request: event.data.value,
+            user_request: requestValue,
             task_summary: resolvedSummary,
           }),
         );

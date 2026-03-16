@@ -16,6 +16,8 @@ import { useElementPicker } from "./element-picker-context";
 
 interface Props {
   projectId: string;
+  onSendMessage?: (value: string) => Promise<void>;
+  isRunning?: boolean;
 };
 
 const formSchema = z.object({
@@ -24,7 +26,7 @@ const formSchema = z.object({
     .max(10000, { message: "Value is too long" }),
 })
 
-export const MessageForm = ({ projectId }: Props) => {
+export const MessageForm = ({ projectId, onSendMessage, isRunning }: Props) => {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const {
@@ -79,14 +81,24 @@ export const MessageForm = ({ projectId }: Props) => {
     const value = elementContext
       ? `${values.value}\n\n${elementContext}`
       : values.value;
-    await createMessage.mutateAsync({
-      value,
-      projectId,
-    });
+    try {
+      if (onSendMessage) {
+        await onSendMessage(value);
+        form.reset();
+        clearSelection();
+      } else {
+        await createMessage.mutateAsync({
+          value,
+          projectId,
+        });
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to send message");
+    }
   };
   
   const [isFocused, setIsFocused] = useState(false);
-  const isPending = createMessage.isPending;
+  const isPending = createMessage.isPending || Boolean(isRunning);
   const isButtonDisabled = isPending || !form.formState.isValid;
   return (
     <Form {...form}>

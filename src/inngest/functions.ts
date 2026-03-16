@@ -1045,7 +1045,7 @@ export const codeAgentFunction = inngest.createFunction(
         llmModels.modelNames.code,
         primaryModelTimeoutMs,
         `code-agent:${llmModels.modelNames.code ?? "primary"}`,
-      )) as CodeRunResult;
+      )) as unknown as CodeRunResult;
     } catch (error) {
       if (isTimeoutError(error) && llmModels.codeFallback) {
         await createProgressMessage(
@@ -1057,7 +1057,7 @@ export const codeAgentFunction = inngest.createFunction(
             llmModels.modelNames.codeFallback ?? llmModels.modelNames.code,
             null,
             `code-agent:${llmModels.modelNames.codeFallback ?? "fallback"}`,
-          );
+          )) as unknown as CodeRunResult;
         } catch (fallbackError) {
           const errorType = resolveAgentErrorType(fallbackError);
           const errorMessage = resolveAgentErrorMessage(errorType);
@@ -1089,12 +1089,12 @@ export const codeAgentFunction = inngest.createFunction(
         }
       } else if (isToolArgumentsParseError(error) && llmModels.codeFallback) {
         try {
-          runResult = await runWithAgent(
+          runResult = (await runWithAgent(
             llmModels.codeFallback,
             llmModels.modelNames.codeFallback ?? llmModels.modelNames.code,
             null,
             `code-agent:${llmModels.modelNames.codeFallback ?? "fallback"}`,
-          );
+          )) as unknown as CodeRunResult;
         } catch (fallbackError) {
           const errorType = resolveAgentErrorType(fallbackError);
           const errorMessage = resolveAgentErrorMessage(errorType);

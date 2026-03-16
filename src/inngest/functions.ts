@@ -1032,22 +1032,27 @@ export const codeAgentFunction = inngest.createFunction(
       return { result, modelName };
     };
 
-    let runResult: { result: unknown; modelName: string | null };
+    type CodeRunResult = {
+      result: { state: { data: AgentState; results?: AgentResultType[] } };
+      modelName: string | null;
+    };
+
+    let runResult: CodeRunResult;
 
     try {
-      runResult = await runWithAgent(
+      runResult = (await runWithAgent(
         llmModels.code,
         llmModels.modelNames.code,
         primaryModelTimeoutMs,
         `code-agent:${llmModels.modelNames.code ?? "primary"}`,
-      );
+      )) as CodeRunResult;
     } catch (error) {
       if (isTimeoutError(error) && llmModels.codeFallback) {
         await createProgressMessage(
           "Primary model is slow. Switching to fallback model...",
         );
         try {
-          runResult = await runWithAgent(
+          runResult = (await runWithAgent(
             llmModels.codeFallback,
             llmModels.modelNames.codeFallback ?? llmModels.modelNames.code,
             null,

@@ -148,6 +148,50 @@ const sanitizeRelativePath = (value?: string) => {
   return trimmed;
 };
 
+type SerializedAgentResult = {
+  agentName: string;
+  output: Message[];
+  toolCalls: unknown[];
+  createdAt: string | Date;
+  checksum?: string;
+};
+
+const deserializeAgentResults = (value: unknown): AgentResult[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return null;
+      }
+      const record = item as SerializedAgentResult;
+      if (!record.agentName || !Array.isArray(record.output) || !Array.isArray(record.toolCalls)) {
+        return null;
+      }
+      const createdAt = record.createdAt ? new Date(record.createdAt) : new Date();
+      return new AgentResult(record.agentName, record.output, record.toolCalls, createdAt);
+    })
+    .filter((item): item is AgentResult => Boolean(item))
+    .slice(-MAX_AGENT_HISTORY_RESULTS);
+};
+
+const serializeAgentResults = (results: AgentResultType[]) => {
+  return results
+    .slice(-MAX_AGENT_HISTORY_RESULTS)
+    .map((item) => {
+      if (!item || typeof (item as AgentResult).export !== "function") {
+        return null;
+      }
+      const exported = (item as AgentResult).export();
+      return {
+        ...exported,
+        createdAt: exported.createdAt instanceof Date ? exported.createdAt.toISOString() : exported.createdAt,
+      };
+    })
+    .filter(Boolean);
+};
+
 const parseTimeoutMs = (value: string | undefined, fallback: number) => {
   if (!value) {
     return fallback;
@@ -558,7 +602,7 @@ export const codeAgentFunction = inngest.createFunction(
       try {
         return await prisma.projectContext.findUnique({
           where: { projectId: event.data.projectId },
-          select: { summary: true },
+          select: { summary: true, results: true },
         });
       } catch (error) {
         console.warn("Failed to load project context", error);
@@ -570,44 +614,16 @@ export const codeAgentFunction = inngest.createFunction(
       ? projectContext.summary.slice(0, MAX_CONTEXT_SUMMARY_LENGTH)
       : null;
 
-    const previousMessages = await step.run("get-previous-messages", async () => {
-      const recentMessages: Message[] = [];
-
-      const messages = await prisma.message.findMany({
-        where: {
-          projectId: event.data.projectId,
-          type: {
-            not: "PROGRESS",
-          },
-        },
-        orderBy: {
-          createdAt: "desc",
-        },
-        take: 2,
-      });
-
-      for (const message of messages) {
-        recentMessages.push({
-          type: "text",
-          role: message.role === "ASSISTANT" ? "assistant" : "user",
-          content: message.content,
-        })
-      }
-
-      const orderedMessages = recentMessages.reverse();
-      if (priorContextSummary) {
-        return [
+    const priorResults = deserializeAgentResults(projectContext?.results);
+    const seedMessages: Message[] = priorContextSummary
+      ? [
           {
             type: "text",
             role: "assistant",
             content: `Project context summary:\n${priorContextSummary}`,
           },
-          ...orderedMessages,
-        ];
-      }
-
-      return orderedMessages;
-    });
+        ]
+      : [];
 
     const buildAgentState = () =>
       createState<AgentState>(
@@ -616,7 +632,8 @@ export const codeAgentFunction = inngest.createFunction(
           files: {},
         },
         {
-          messages: previousMessages,
+          messages: seedMessages,
+          results: priorResults,
         },
       );
 
@@ -1051,6 +1068,10 @@ export const codeAgentFunction = inngest.createFunction(
 
     let contextSummaryResult: { output: Message[]; raw?: unknown } | null = null;
     let nextContextSummary: string | null = null;
+    const nextHistoryResults =
+      !isError && result.state?.results
+        ? serializeAgentResults(result.state.results)
+        : null;
 
     if (resolvedSummary && !isError) {
       const contextTimeoutMs = parseTimeoutMs(
@@ -1205,14 +1226,22 @@ export const codeAgentFunction = inngest.createFunction(
       })
     });
 
-    if (nextContextSummary) {
+    const fallbackSummary = nextContextSummary
+      ?? priorContextSummary
+      ?? (resolvedSummary ? resolvedSummary.slice(0, MAX_CONTEXT_SUMMARY_LENGTH) : null);
+
+    if (fallbackSummary || nextHistoryResults) {
       await step.run("save-project-context", async () => {
         await prisma.projectContext.upsert({
           where: { projectId: event.data.projectId },
-          update: { summary: nextContextSummary },
+          update: {
+            summary: fallbackSummary ?? "Project context summary pending.",
+            results: nextHistoryResults ?? undefined,
+          },
           create: {
             projectId: event.data.projectId,
-            summary: nextContextSummary,
+            summary: fallbackSummary ?? "Project context summary pending.",
+            results: nextHistoryResults ?? undefined,
           },
         });
       });

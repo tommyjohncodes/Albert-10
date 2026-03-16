@@ -7,14 +7,19 @@ import { useQuery } from "@tanstack/react-query";
 
 import { cn } from "@/lib/utils";
 import { useScroll } from "@/hooks/use-scroll";
+import { useCurrentTheme } from "@/hooks/use-current-theme";
 import { Button } from "@/components/ui/button";
 import { UserControl } from "@/components/user-control";
 import { useTRPC } from "@/trpc/client";
 
+const LOGO_DARK = "/Albert%20-%20Text%20Logo%20-%20Dark%20Mode.png";
+
 export const Navbar = () => {
   const isScrolled = useScroll();
+  const currentTheme = useCurrentTheme();
   const trpc = useTRPC();
   const adminStatus = useQuery(trpc.admin.amIAdmin.queryOptions());
+  const logoSrc = currentTheme === "dark" ? LOGO_DARK : "/albert-logo.png";
 
   return (
     <nav
@@ -25,8 +30,8 @@ export const Navbar = () => {
     >
       <div className="max-w-5xl mx-auto w-full flex justify-between items-center">
         <Link href="/" className="flex items-center gap-2">
-          <Image src="/albert-logo.png" alt="Vibe" width={24} height={24} />
-          <span className="font-semibold text-lg">Vibe</span>
+          <Image src={logoSrc} alt="Albert" width={24} height={24} />
+          <span className="font-semibold text-lg">Albert</span>
         </Link>
         <SignedOut>
           <div className="flex gap-2">

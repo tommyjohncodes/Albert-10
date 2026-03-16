@@ -28,6 +28,8 @@ import { Button } from "@/components/ui/button";
 import { useCurrentTheme } from "@/hooks/use-current-theme";
 import { useTRPC } from "@/trpc/client";
 
+const LOGO_FULL_DARK = "/Albert%20-%20Text%20Logo%20-%20Dark%20Mode.png";
+
 const primaryNav = [
   { label: "Home", href: "/", icon: HomeIcon },
   { label: "App Library", href: "/library", icon: LayoutGridIcon },
@@ -86,7 +88,7 @@ export const HomeSidebar = () => {
       <div className="px-6 pt-6 pb-4">
         <Link href="/" className="flex items-center gap-3">
           <Image
-            src="/albert-logo-full.png"
+            src={currentTheme === "dark" ? LOGO_FULL_DARK : "/albert-logo-full.png"}
             alt="Albert"
             width={220}
             height={56}

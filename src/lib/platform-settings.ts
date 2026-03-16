@@ -5,7 +5,7 @@ import { decryptSecret, encryptSecret } from "@/lib/secrets";
 
 export const GLOBAL_PLATFORM_SETTINGS_ID = "global";
 export const TOKEN_EFFICIENCY_DEFAULTS = {
-  enabled: false,
+  enabled: true,
   agentHistoryLimit: 4,
   contextSummaryMaxChars: 900,
   agentTimeoutMs: 240_000,

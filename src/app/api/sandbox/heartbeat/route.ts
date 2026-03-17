@@ -39,6 +39,13 @@ export async function POST(req: Request) {
   if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  if (!process.env.E2B_API_KEY) {
+    console.error("[sandbox] heartbeat missing E2B_API_KEY", { userId });
+    return NextResponse.json(
+      { error: "E2B_API_KEY is not configured" },
+      { status: 500 },
+    );
+  }
 
   let payload: { fragmentId?: string } | null = null;
   try {
@@ -128,7 +135,12 @@ export async function POST(req: Request) {
       sandboxUrl,
       pickerReload: pickerStatus.updated,
     });
-  } catch {
+  } catch (error) {
+    console.error("[sandbox] heartbeat failed", {
+      userId,
+      fragmentId,
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
     try {
       const projectFragments = await prisma.fragment.findMany({
         where: {
@@ -196,6 +208,11 @@ export async function POST(req: Request) {
         pickerReload: pickerStatus.updated,
       });
     } catch (fallbackError) {
+      console.error("[sandbox] heartbeat fallback failed", {
+        userId,
+        fragmentId,
+        error: fallbackError instanceof Error ? fallbackError.message : "Unknown error",
+      });
       return NextResponse.json(
         {
           error:

@@ -35,6 +35,13 @@ export async function POST(req: Request) {
     userId,
     hasE2BKey: Boolean(process.env.E2B_API_KEY),
   });
+  if (!process.env.E2B_API_KEY) {
+    console.error("[sandbox] missing E2B_API_KEY", { userId });
+    return NextResponse.json(
+      { error: "E2B_API_KEY is not configured" },
+      { status: 500 },
+    );
+  }
 
   let payload: { projectId?: string } | null = null;
   try {

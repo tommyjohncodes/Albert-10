@@ -5,9 +5,10 @@ import { useElementPicker } from "./element-picker-context";
 
 interface Props {
   data: FragmentPreview;
+  projectId: string;
 };
 
-export function FragmentWeb({ data }: Props) {
+export function FragmentWeb({ data, projectId }: Props) {
   const [fragmentKey, setFragmentKey] = useState(0);
   const [currentSandboxUrl, setCurrentSandboxUrl] = useState<string | null>(
     data?.sandboxUrl ?? null,
@@ -37,8 +38,34 @@ export function FragmentWeb({ data }: Props) {
     });
   }, [currentSandboxUrl, previewOrigin, setPreviewTarget]);
 
+  const startSandbox = useCallback(async () => {
+    if (!projectId) return null;
+    try {
+      const res = await fetch("/api/sandbox/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId }),
+      });
+      if (!res.ok) return null;
+      const payload = await res.json();
+      const nextSandboxUrl =
+        typeof payload?.sandboxUrl === "string" ? payload.sandboxUrl : null;
+      if (nextSandboxUrl) {
+        setCurrentSandboxUrl(nextSandboxUrl);
+        setFragmentKey((prev) => prev + 1);
+      }
+      return nextSandboxUrl;
+    } catch {
+      return null;
+    }
+  }, [projectId]);
+
   const wakeSandbox = useCallback(async (force = false) => {
-    if (!data?.id || !data?.sandboxUrl) return false;
+    if (!data?.id) return false;
+    if (!data?.sandboxUrl) {
+      const started = await startSandbox();
+      return Boolean(started);
+    }
     const now = Date.now();
     if (!force && now - lastWakeAtRef.current < 5000) return true;
     lastWakeAtRef.current = now;
@@ -68,11 +95,11 @@ export function FragmentWeb({ data }: Props) {
     } catch {
       return false;
     }
-  }, [data?.id, data?.sandboxUrl, currentSandboxUrl]);
+  }, [data?.id, data?.sandboxUrl, currentSandboxUrl, startSandbox]);
 
   // Single wake when preview is first shown; no periodic heartbeat to minimize E2B usage.
   useEffect(() => {
-    if (!data?.id || !data?.sandboxUrl) return;
+    if (!data?.id) return;
     void wakeSandbox(true);
   }, [data?.id, data?.sandboxUrl, wakeSandbox]);
 

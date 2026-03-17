@@ -34,6 +34,10 @@ export async function POST(req: Request) {
   console.info("[sandbox] start request", {
     userId,
     hasE2BKey: Boolean(process.env.E2B_API_KEY),
+    templateName:
+      process.env.E2B_TEMPLATE_NAME ??
+      process.env.E2B_TEMPLATE ??
+      "vibe-nextjs-test-2",
   });
   if (!process.env.E2B_API_KEY) {
     console.error("[sandbox] missing E2B_API_KEY", { userId });

@@ -1043,14 +1043,12 @@ export const codeAgentFunction = inngest.createFunction(
       const network = buildNetwork(agent, state);
       const startedAt = Date.now();
       logAgent("llm run started", { modelName, stepLabel });
-      const runPromise = step.run(stepLabel, async () =>
-        network.run(runInput, {
-          state,
-          streaming: publishStream
-            ? { publish: publishStream, simulateChunking: false }
-            : undefined,
-        }),
-      );
+      const runPromise = network.run(runInput, {
+        state,
+        streaming: publishStream
+          ? { publish: publishStream, simulateChunking: false }
+          : undefined,
+      });
       const timeoutMs =
         typeof timeoutOverrideMs === "number" && timeoutOverrideMs > 0
           ? timeoutOverrideMs

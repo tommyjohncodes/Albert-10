@@ -16,6 +16,11 @@ const TX_OPTIONS = {
   timeout: 120_000,
 } satisfies Parameters<typeof prisma.$transaction>[1];
 
+const getSandboxTemplateName = () =>
+  process.env.E2B_TEMPLATE_NAME ??
+  process.env.E2B_TEMPLATE ??
+  "vibe-nextjs-test-2";
+
 type TxClient = Prisma.TransactionClient;
 
 interface EnsureProjectSandboxOptions {
@@ -311,10 +316,19 @@ const createSandbox = async (
 ) => {
   await evictOverflowSandboxes(tx, params.userId, [], 1);
 
-  const sandbox = await Sandbox.betaCreate("vibe-nextjs-test-2", {
-    timeoutMs: SANDBOX_RUN_TIMEOUT,
-    lifecycle: { onTimeout: "pause" },
-  });
+  const templateName = getSandboxTemplateName();
+  let sandbox;
+  try {
+    sandbox = await Sandbox.betaCreate(templateName, {
+      timeoutMs: SANDBOX_RUN_TIMEOUT,
+      lifecycle: { onTimeout: "pause" },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    throw new Error(
+      `Failed to create sandbox using template "${templateName}": ${message}`,
+    );
+  }
 
   if (params.hydrateFiles) {
     for (const [path, content] of Object.entries(params.hydrateFiles)) {

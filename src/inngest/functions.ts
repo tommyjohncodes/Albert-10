@@ -512,6 +512,28 @@ export const codeAgentFunction = inngest.createFunction(
   { id: "code-agent" },
   { event: "code-agent/run" },
   async ({ event, step, publish }) => {
+    const logAgent = (
+      message: string,
+      extra?: Record<string, unknown>,
+      level: "info" | "warn" | "error" = "info",
+    ) => {
+      const payload = {
+        eventId: event.id,
+        projectId: event.data?.projectId ?? null,
+        userId: event.data?.userId ?? null,
+        orgId: event.data?.orgId ?? null,
+        ...extra,
+      };
+      if (level === "error") {
+        console.error("[code-agent]", message, payload);
+      } else if (level === "warn") {
+        console.warn("[code-agent]", message, payload);
+      } else {
+        console.info("[code-agent]", message, payload);
+      }
+    };
+
+    logAgent("run started");
     const projectAccess = await step.run("get-project-access", async () => {
       const project = await prisma.project.findUnique({
         where: {
@@ -533,11 +555,13 @@ export const codeAgentFunction = inngest.createFunction(
       };
     });
 
+    logAgent("resolved project access", projectAccess ?? undefined);
     const orgId = projectAccess?.orgId ?? null;
     const userId = projectAccess?.userId ?? null;
     const resolvedUserId = userId ?? event.data.userId;
 
     if (!resolvedUserId) {
+      logAgent("missing user id", undefined, "error");
       throw new Error("Project user ID is missing.");
     }
 
@@ -560,6 +584,7 @@ export const codeAgentFunction = inngest.createFunction(
         ? event.data.userMessage
         : requestValue;
 
+    logAgent("resolving sandbox");
     const sandboxResult = await step.run("get-sandbox-id", async () => {
       const latestFragment = await prisma.fragment.findFirst({
         where: {
@@ -596,8 +621,10 @@ export const codeAgentFunction = inngest.createFunction(
 
       return { sandboxId: managedSandbox.sandboxId };
     });
+    logAgent("sandbox resolved", sandboxResult ?? undefined);
 
     if (!sandboxResult?.sandboxId) {
+      logAgent("sandbox unavailable", undefined, "error");
       const message = buildUserFailureMessage({
         errorType: "sandbox_limit_reached",
         errorMessage:
@@ -675,6 +702,7 @@ export const codeAgentFunction = inngest.createFunction(
     const llmModels = await getLlmModels(orgId);
 
     const createProgressMessage = async (content: string) => {
+      logAgent("progress", { content });
       try {
         await prisma.message.create({
           data: {
@@ -1014,6 +1042,7 @@ export const codeAgentFunction = inngest.createFunction(
       const agent = buildCodeAgent(model);
       const network = buildNetwork(agent, state);
       const startedAt = Date.now();
+      logAgent("llm run started", { modelName, stepLabel });
       const runPromise = step.run(stepLabel, async () =>
         network.run(runInput, {
           state,
@@ -1031,6 +1060,7 @@ export const codeAgentFunction = inngest.createFunction(
           ? await runWithTimeout(runPromise, timeoutMs, "Coding agent run")
           : await runPromise;
       logLlmTiming("code-agent", modelName, startedAt);
+      logAgent("llm run completed", { modelName, durationMs: Date.now() - startedAt });
       return { result, modelName };
     };
 

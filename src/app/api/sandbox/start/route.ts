@@ -31,6 +31,10 @@ export async function POST(req: Request) {
   if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  console.info("[sandbox] start request", {
+    userId,
+    hasE2BKey: Boolean(process.env.E2B_API_KEY),
+  });
 
   let payload: { projectId?: string } | null = null;
   try {
@@ -123,9 +127,15 @@ export async function POST(req: Request) {
       pickerReload: pickerStatus.updated,
     });
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Sandbox start failed";
+    console.error("[sandbox] start failed", {
+      userId,
+      projectId,
+      error: message,
+    });
     return NextResponse.json(
       {
-        error: error instanceof Error ? error.message : "Sandbox start failed",
+        error: message,
       },
       { status: 502 },
     );

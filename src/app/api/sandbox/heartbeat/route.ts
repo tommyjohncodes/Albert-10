@@ -3,6 +3,7 @@ import { auth } from "@clerk/nextjs/server";
 import { Sandbox } from "@e2b/code-interpreter";
 
 import { prisma } from "@/lib/db";
+import { SandboxState } from "@/generated/prisma";
 import { getClerkSecretKey } from "@/lib/clerk-server";
 import {
   ensureProjectSandbox,
@@ -31,6 +32,12 @@ const extractSandboxId = (sandboxUrl: string) => {
   } catch {
     return null;
   }
+};
+
+const isSandboxNotFound = (error: unknown) => {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return message.includes("not found") || message.includes("paused sandbox");
 };
 
 export async function POST(req: Request) {
@@ -136,11 +143,33 @@ export async function POST(req: Request) {
       pickerReload: pickerStatus.updated,
     });
   } catch (error) {
+    const errorMessage =
+      error instanceof Error ? error.message : "Unknown error";
+    const shouldForceNew = isSandboxNotFound(error);
     console.error("[sandbox] heartbeat failed", {
       userId,
       fragmentId,
-      error: error instanceof Error ? error.message : "Unknown error",
+      error: errorMessage,
+      forceNew: shouldForceNew,
     });
+    if (shouldForceNew) {
+      try {
+        await prisma.project.update({
+          where: { id: fragment.message.project.id },
+          data: { sandboxId: null, sandboxUpdatedAt: null },
+        });
+        await prisma.sandboxInstance.updateMany({
+          where: { sandboxId },
+          data: { state: SandboxState.TERMINATED, terminatedAt: new Date() },
+        });
+        await prisma.fragment.update({
+          where: { id: fragment.id },
+          data: { sandboxUrl: null },
+        });
+      } catch (cleanupError) {
+        console.warn("[sandbox] cleanup failed", cleanupError);
+      }
+    }
     try {
       const projectFragments = await prisma.fragment.findMany({
         where: {
@@ -172,8 +201,8 @@ export async function POST(req: Request) {
         projectId: fragment.message.project.id,
         userId,
         orgId: fragment.message.project.orgId,
-        projectSandboxId: sandboxId,
-        inferredSandboxId: sandboxId,
+        projectSandboxId: shouldForceNew ? null : sandboxId,
+        inferredSandboxId: shouldForceNew ? null : sandboxId,
         hydrateFiles: filesToWrite,
       });
 

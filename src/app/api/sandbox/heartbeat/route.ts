@@ -164,7 +164,7 @@ export async function POST(req: Request) {
         });
         await prisma.fragment.update({
           where: { id: fragment.id },
-          data: { sandboxUrl: null },
+          data: { sandboxUrl: "" },
         });
       } catch (cleanupError) {
         console.warn("[sandbox] cleanup failed", cleanupError);

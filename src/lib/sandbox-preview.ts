@@ -10,34 +10,41 @@ const PREVIEW_BOOT_TIMEOUT_MS = 180_000;
 const checkPreviewCommand =
   `bash -lc 'curl -s -o /dev/null -w "%{http_code}" --max-time 5 ${PREVIEW_URL} || true'`;
 
-const restartPreviewCommand = [
-  "cd /home/user",
-  `if command -v ss >/dev/null 2>&1; then pid=$(ss -ltnp '( sport = :${SANDBOX_PREVIEW_PORT} )' 2>/dev/null | sed -n 's/.*pid=\\([0-9]\\+\\).*/\\1/p' | head -n 1); fi`,
-  'if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; fi',
-  `pids=$(lsof -ti tcp:${SANDBOX_PREVIEW_PORT} 2>/dev/null || true); if [ -n "$pids" ]; then kill $pids 2>/dev/null || true; fi`,
-  "pkill -f \"next dev\" 2>/dev/null || true",
-  "LOCKFILE=''",
-  "if [ -f package-lock.json ]; then LOCKFILE='package-lock.json'; fi",
-  "if [ -z \"$LOCKFILE\" ] && [ -f pnpm-lock.yaml ]; then LOCKFILE='pnpm-lock.yaml'; fi",
-  "if [ -z \"$LOCKFILE\" ] && [ -f yarn.lock ]; then LOCKFILE='yarn.lock'; fi",
-  "STAMP='node_modules/.albert-deps-stamp'",
-  "if [ -f package.json ]; then",
-  "  NEED_INSTALL=0",
-  "  if [ ! -f \"$STAMP\" ]; then NEED_INSTALL=1; fi",
-  "  if [ -n \"$LOCKFILE\" ] && [ -f \"$LOCKFILE\" ] && [ \"$LOCKFILE\" -nt \"$STAMP\" ]; then NEED_INSTALL=1; fi",
-  "  if [ \"$NEED_INSTALL\" = \"1\" ]; then npm install --no-fund --no-audit 2>&1 | tail -30 >> /var/tmp/next-preview.log || true; touch \"$STAMP\"; fi",
-  "fi",
-  "nohup bash -lc 'cd /home/user && NEXT_TELEMETRY_DISABLED=1 npx next dev --turbopack --hostname 0.0.0.0 --port 3000' >/var/tmp/next-preview.log 2>&1 &",
-].join("; ");
+// Written to a temp file in the sandbox to avoid shell-quoting/joining issues.
+const RESTART_SCRIPT = `#!/bin/bash
+cd /home/user
 
-const waitForPreviewCommand = [
-  "for i in $(seq 1 90); do",
-  `code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 ${PREVIEW_URL} || true)`,
-  "if [ \"$code\" = \"200\" ]; then exit 0; fi",
-  "sleep 1",
-  "done",
-  "exit 1",
-].join("; ");
+# Kill any existing Next.js dev server
+pkill -f "next dev" 2>/dev/null || true
+sleep 1
+
+# Install dependencies if node_modules stamp is missing
+STAMP="node_modules/.albert-deps-stamp"
+if [ -f package.json ] && [ ! -f "$STAMP" ]; then
+  npm install --no-fund --no-audit >> /var/tmp/next-preview.log 2>&1 || true
+  touch "$STAMP"
+fi
+
+# Ensure tw-animate-css is present (required by globals.css from shadcn init)
+if [ ! -d node_modules/tw-animate-css ]; then
+  npm install tw-animate-css --no-fund --no-audit >> /var/tmp/next-preview.log 2>&1 || true
+fi
+
+# Start Next.js in a detached subshell so E2B does not track the child process
+(
+  nohup bash -lc 'cd /home/user && NEXT_TELEMETRY_DISABLED=1 npx next dev --turbopack --hostname 0.0.0.0 --port ${SANDBOX_PREVIEW_PORT}' >/var/tmp/next-preview.log 2>&1 &
+  disown
+)
+
+exit 0
+`;
+
+const waitForPreviewCommand =
+  `i=0; while [ $i -lt 90 ]; do ` +
+  `code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 ${PREVIEW_URL} || true); ` +
+  `if [ "$code" = "200" ]; then exit 0; fi; ` +
+  `sleep 1; i=$((i+1)); ` +
+  `done; exit 1`;
 
 async function isPreviewReady(sandbox: Sandbox) {
   try {
@@ -52,7 +59,8 @@ async function isPreviewReady(sandbox: Sandbox) {
 }
 
 async function restartPreviewServer(sandbox: Sandbox) {
-  await sandbox.commands.run(restartPreviewCommand, {
+  await sandbox.files.write("/tmp/albert-restart.sh", RESTART_SCRIPT);
+  await sandbox.commands.run("bash /tmp/albert-restart.sh", {
     timeoutMs: PREVIEW_RESTART_TIMEOUT_MS,
   });
 }

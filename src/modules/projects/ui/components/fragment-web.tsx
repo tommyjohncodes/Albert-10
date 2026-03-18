@@ -115,7 +115,7 @@ export function FragmentWeb({ data }: Props) {
           key={fragmentKey}
           ref={iframeRef}
           className="h-full w-full"
-          sandbox="allow-forms allow-scripts allow-same-origin"
+          sandbox="allow-forms allow-scripts allow-same-origin allow-popups allow-modals"
           loading="lazy"
           src={currentSandboxUrl ?? undefined}
           onPointerDown={() => wakeSandbox()}

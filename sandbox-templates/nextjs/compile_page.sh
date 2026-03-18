@@ -17,4 +17,4 @@ function ping_server() {
 }
 
 ping_server &
-cd /home/user && npx next dev --turbopack
+cd /home/user && npx next dev --turbopack --hostname 0.0.0.0

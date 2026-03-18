@@ -4,6 +4,7 @@ export const SANDBOX_PREVIEW_PORT = 3000;
 
 const PREVIEW_URL = `http://127.0.0.1:${SANDBOX_PREVIEW_PORT}/`;
 const PREVIEW_CHECK_TIMEOUT_MS = 10_000;
+const PREVIEW_RESTART_TIMEOUT_MS = 120_000;
 const PREVIEW_BOOT_TIMEOUT_MS = 180_000;
 
 const checkPreviewCommand =
@@ -52,9 +53,15 @@ async function isPreviewReady(sandbox: Sandbox) {
 }
 
 async function restartPreviewServer(sandbox: Sandbox) {
-  await sandbox.commands.run(restartPreviewCommand, {
-    timeoutMs: PREVIEW_CHECK_TIMEOUT_MS,
-  });
+  try {
+    await sandbox.commands.run(restartPreviewCommand, {
+      timeoutMs: PREVIEW_RESTART_TIMEOUT_MS,
+    });
+  } catch (error) {
+    // Log but don't throw — the server may still come up (e.g. from the template's
+    // own startup script) even if our restart command partially failed.
+    console.warn("[sandbox] restartPreviewServer error (will still wait):", error);
+  }
 }
 
 async function readPreviewLog(sandbox: Sandbox) {

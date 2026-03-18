@@ -5,6 +5,7 @@ export const SANDBOX_PREVIEW_PORT = 3000;
 const PREVIEW_URL = `http://127.0.0.1:${SANDBOX_PREVIEW_PORT}/`;
 const PREVIEW_CHECK_TIMEOUT_MS = 10_000;
 const PREVIEW_BOOT_TIMEOUT_MS = 180_000;
+const PREVIEW_RESTART_TIMEOUT_MS = 120_000;
 
 const checkPreviewCommand =
   `bash -lc 'curl -s -o /dev/null -w "%{http_code}" --max-time 5 ${PREVIEW_URL} || true'`;
@@ -70,7 +71,7 @@ const formatCommandError = (error: unknown) => {
 async function restartPreviewServer(sandbox: Sandbox, sandboxId: string) {
   try {
     await sandbox.commands.run(restartPreviewCommand, {
-      timeoutMs: PREVIEW_CHECK_TIMEOUT_MS,
+      timeoutMs: PREVIEW_RESTART_TIMEOUT_MS,
     });
   } catch (error) {
     const previewLog = await readPreviewLog(sandbox);

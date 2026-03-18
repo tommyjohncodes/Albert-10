@@ -1,205 +1,1210 @@
 import { z } from "zod";
 import { Sandbox } from "@e2b/code-interpreter";
-import { createAgent, createTool, createNetwork, type Tool, type Message, createState } from "@inngest/agent-kit";
+import {
+  createAgent,
+  createTool,
+  createNetwork,
+  type Agent,
+  type AgentMessageChunk,
+  AgentResult,
+  type AgentResult as AgentResultType,
+  type Message,
+  type Tool,
+  type ToolResultMessage,
+  createState,
+} from "@inngest/agent-kit";
 
 import { prisma } from "@/lib/db";
+import { recordLlmUsage } from "@/lib/llm-usage";
 import { getLlmModels } from "@/lib/llm";
-import { FRAGMENT_TITLE_PROMPT, PROMPT, RESPONSE_PROMPT } from "@/prompt";
+import {
+  ensureProjectSandbox,
+  touchProjectSandbox,
+} from "@/lib/sandbox-instance";
+import { recordSandboxUsage } from "@/lib/sandbox-usage";
+import {
+  ensureSandboxPreviewReady,
+  SANDBOX_PREVIEW_PORT,
+} from "@/lib/sandbox-preview";
+import {
+  getPlatformSettings,
+  resolveTokenEfficiencySettings,
+} from "@/lib/platform-settings";
+import {
+  CONTEXT_SUMMARY_PROMPT,
+  FRAGMENT_TITLE_PROMPT,
+  PROMPT,
+  RESPONSE_PROMPT,
+} from "@/prompt";
+import { getAgentStreamChannel } from "@/inngest/realtime";
 
 import { inngest } from "./client";
-import { SANDBOX_TIMEOUT } from "./types";
+import { SANDBOX_RUN_TIMEOUT, SANDBOX_TIMEOUT } from "./types";
 import { getSandbox, lastAssistantTextMessageContent, parseAgentOutput } from "./utils";
 
 interface AgentState {
   summary: string;
   files: { [path: string]: string };
+  userId?: string;
+  error?: string;
+  finishReason?: string;
+  lastAssistantMessage?: string;
 };
 
-const getSandboxTemplateName = () =>
-  process.env.E2B_TEMPLATE_NAME ??
-  process.env.E2B_TEMPLATE ??
-  "vibe-nextjs-test-2";
+interface UsageShape {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  costUsd?: number;
+}
+
+interface RawUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  cost?: number | string;
+  total_cost?: number | string;
+  totalCost?: number | string;
+  costUsd?: number | string;
+  cost_usd?: number | string;
+  total_cost_usd?: number | string;
+  totalCostUsd?: number | string;
+}
+
+const extractSandboxIdFromUrl = (sandboxUrl?: string | null) => {
+  if (!sandboxUrl) return null;
+  try {
+    const url = new URL(sandboxUrl);
+    const host = url.host;
+    const dotIndex = host.indexOf(".");
+    const subdomain = dotIndex > 0 ? host.slice(0, dotIndex) : host;
+    const dashIndex = subdomain.indexOf("-");
+    if (dashIndex <= 0) return null;
+    return subdomain.slice(dashIndex + 1);
+  } catch {
+    return null;
+  }
+};
+
+const normalizeUsage = (usage?: RawUsage | null): UsageShape => {
+  if (!usage) {
+    return {};
+  }
+
+  const promptTokens = usage.promptTokens ?? usage.prompt_tokens ?? 0;
+  const completionTokens = usage.completionTokens ?? usage.completion_tokens ?? 0;
+  const totalTokens =
+    usage.totalTokens ?? usage.total_tokens ?? promptTokens + completionTokens;
+  const rawCost =
+    usage.costUsd ??
+    usage.cost_usd ??
+    usage.total_cost_usd ??
+    usage.totalCostUsd ??
+    usage.cost ??
+    usage.total_cost ??
+    usage.totalCost ??
+    0;
+  const costUsd =
+    typeof rawCost === "number"
+      ? rawCost
+      : typeof rawCost === "string"
+        ? Number(rawCost)
+        : 0;
+
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens,
+    costUsd: Number.isFinite(costUsd) ? costUsd : 0,
+  };
+};
+
+const MAX_CONTEXT_SUMMARY_LENGTH = 1200;
+const MAX_TOOL_OUTPUT_CHARS = 12000;
+const MAX_READ_FILE_CHARS = 12000;
+const MAX_READ_SNIPPET_CHARS = 8000;
+const MAX_AGENT_HISTORY_RESULTS = 6;
+const DEFAULT_AGENT_TIMEOUT_MS = 300_000;
+const DEFAULT_RESPONSE_TIMEOUT_MS = 45_000;
+const DEFAULT_CONTEXT_TIMEOUT_MS = 20_000;
+const DEFAULT_PRIMARY_MODEL_TIMEOUT_MS = 120_000;
+const TERMINAL_COMMAND_TIMEOUT_MS = 120_000;
+const BLOCKED_COMMAND_PATTERNS = [
+  /\bnpm\s+run\s+(dev|start|build)\b/i,
+  /\bnext\s+(dev|start|build)\b/i,
+];
+
+const truncateText = (value: string, maxChars: number) => {
+  if (value.length <= maxChars) {
+    return value;
+  }
+  const truncated = value.slice(0, maxChars);
+  return `${truncated}\n\n[TRUNCATED ${value.length - maxChars} chars]`;
+};
+
+const clampNumber = (value: number, min: number, max: number) =>
+  Math.min(Math.max(value, min), max);
+
+const sanitizeRelativePath = (value?: string) => {
+  if (!value) {
+    return ".";
+  }
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.startsWith("/") || trimmed.includes("..")) {
+    return ".";
+  }
+  if (!/^[\w./-]+$/.test(trimmed)) {
+    return ".";
+  }
+  return trimmed;
+};
+
+type SerializedAgentResult = {
+  agentName: string;
+  output: Message[];
+  toolCalls: unknown[];
+  createdAt: string | Date;
+  checksum?: string;
+};
+
+const deserializeAgentResults = (
+  value: unknown,
+  limit: number = MAX_AGENT_HISTORY_RESULTS,
+): AgentResult[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return null;
+      }
+      const record = item as SerializedAgentResult;
+      if (!record.agentName || !Array.isArray(record.output) || !Array.isArray(record.toolCalls)) {
+        return null;
+      }
+      const createdAt = record.createdAt ? new Date(record.createdAt) : new Date();
+      return new AgentResult(
+        record.agentName,
+        record.output,
+        record.toolCalls as ToolResultMessage[],
+        createdAt,
+      );
+    })
+    .filter((item): item is AgentResult => Boolean(item))
+    .slice(-limit);
+};
+
+const serializeAgentResults = (
+  results: AgentResultType[],
+  limit: number = MAX_AGENT_HISTORY_RESULTS,
+) => {
+  return results
+    .slice(-limit)
+    .map((item) => {
+      if (!item || typeof (item as AgentResult).export !== "function") {
+        return null;
+      }
+      const exported = (item as AgentResult).export();
+      return {
+        ...exported,
+        createdAt: exported.createdAt instanceof Date ? exported.createdAt.toISOString() : exported.createdAt,
+      };
+    })
+    .filter(Boolean);
+};
+
+const parseTimeoutMs = (value: string | number | undefined | null, fallback: number) => {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  const parsed = Number.parseInt(String(value), 10);
+  if (Number.isFinite(parsed) && parsed >= 0) {
+    return parsed;
+  }
+  return fallback;
+};
+
+const runWithTimeout = async <T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string,
+): Promise<T> => {
+  let timeoutId: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+};
+
+const parseUsageFromRaw = (raw: unknown): UsageShape => {
+  if (!raw) {
+    return {};
+  }
+
+  let value: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      return {};
+    }
+  }
+
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+
+  const usage =
+    (value as { usage?: RawUsage }).usage ??
+    (value as { data?: { usage?: RawUsage } }).data?.usage ??
+    (value as { response?: { usage?: RawUsage } }).response?.usage;
+
+  if (!usage || typeof usage !== "object") {
+    return {};
+  }
+
+  return normalizeUsage(usage);
+};
+
+type FailureContext = {
+  errorType: string;
+  errorMessage?: string | null;
+  finishReason?: string | null;
+  summaryFound: boolean;
+  filesCount: number;
+};
+
+const buildFailureReason = ({
+  errorType,
+  finishReason,
+}: FailureContext): string | null => {
+  if (finishReason === "length") {
+    return "The model hit its output limit before finishing.";
+  }
+  if (finishReason === "content_filter") {
+    return "The response was blocked by the safety filter.";
+  }
+  if (errorType === "missing_summary") {
+    return "The agent did not produce the final task summary.";
+  }
+  if (errorType === "no_files") {
+    return "No files were created or updated.";
+  }
+  if (errorType === "sandbox_limit_reached") {
+    return "The sandbox concurrency limit was reached.";
+  }
+  if (errorType === "tool_call_parse_failed") {
+    return "The model returned malformed tool arguments.";
+  }
+  if (errorType === "agent_timeout") {
+    return "The agent took too long to respond.";
+  }
+  if (errorType === "agent_error") {
+    return "The agent reported an error during execution.";
+  }
+  return "An unknown error occurred.";
+};
+
+const buildFailureGuidance = ({
+  errorType,
+  finishReason,
+}: FailureContext): string | null => {
+  if (finishReason === "length") {
+    return "Try a shorter request or split the task into smaller steps.";
+  }
+  if (finishReason === "content_filter") {
+    return "Rephrase the request to avoid restricted content.";
+  }
+  if (errorType === "missing_summary") {
+    return "Retry the request, and consider shortening it if it keeps failing.";
+  }
+  if (errorType === "no_files") {
+    return "Be more specific about what you want built, then try again.";
+  }
+  if (errorType === "sandbox_limit_reached") {
+    return "Close another project or wait a minute, then retry.";
+  }
+  if (errorType === "tool_call_parse_failed") {
+    return "Try again or switch models.";
+  }
+  if (errorType === "agent_timeout") {
+    return "Try again or simplify the request.";
+  }
+  if (errorType === "agent_error") {
+    return "Try again, or simplify the request.";
+  }
+  return "Try again or simplify the request.";
+};
+
+const buildUserFailureMessage = (context: FailureContext): string => {
+  const base =
+    context.errorMessage ??
+    (context.errorType === "missing_summary"
+      ? "The agent didn't finish the response."
+      : context.errorType === "no_files"
+        ? "The agent didn't produce any files."
+        : "Something went wrong. Please try again.");
+  const reason = buildFailureReason(context);
+  const guidance = buildFailureGuidance(context);
+
+  let message = base;
+  if (reason) {
+    message += `\n\nReason: ${reason}`;
+  }
+  if (guidance) {
+    message += `\nTry: ${guidance}`;
+  }
+
+  return message;
+};
+
+const recordAgentFailure = async (data: {
+  projectId: string;
+  sandboxId?: string | null;
+  errorType: string;
+  errorMessage?: string | null;
+  finishReason?: string | null;
+  lastAssistantMessage?: string | null;
+  summaryFound: boolean;
+  filesCount: number;
+}) => {
+  try {
+    const client = (prisma as unknown as {
+      agentFailure?: { create: (args: { data: unknown }) => Promise<unknown> };
+    }).agentFailure;
+    if (!client?.create) return;
+    await client.create({ data });
+  } catch (error) {
+    console.warn("Failed to record agent failure", error);
+  }
+};
+
+const mergeUsage = (items: UsageShape[]): UsageShape => {
+  const totals: UsageShape = {
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    costUsd: 0,
+  };
+
+  for (const item of items) {
+    totals.promptTokens = (totals.promptTokens ?? 0) + (item.promptTokens ?? 0);
+    totals.completionTokens =
+      (totals.completionTokens ?? 0) + (item.completionTokens ?? 0);
+    totals.totalTokens = (totals.totalTokens ?? 0) + (item.totalTokens ?? 0);
+    totals.costUsd = (totals.costUsd ?? 0) + (item.costUsd ?? 0);
+  }
+
+  return totals;
+};
+
+const extractUsageFromAgentResult = (result?: { raw?: unknown } | null) =>
+  parseUsageFromRaw(result?.raw);
+
+const extractUsageFromNetwork = (
+  network?: { state?: { results?: Array<{ raw?: unknown }> } } | null,
+) =>
+  mergeUsage(
+    (network?.state?.results ?? []).map((result) =>
+      extractUsageFromAgentResult(result),
+    ),
+  );
+
+const parseRawObject = (raw: unknown) => {
+  if (!raw) return null;
+  if (typeof raw === "string") {
+    try {
+      return JSON.parse(raw) as unknown;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof raw === "object") {
+    return raw as object;
+  }
+  return null;
+};
+
+const extractFinishReasonFromRaw = (raw: unknown) => {
+  const value = parseRawObject(raw) as
+    | {
+        choices?: Array<{ finish_reason?: string; finishReason?: string }>;
+        data?: { choices?: Array<{ finish_reason?: string; finishReason?: string }> };
+        response?: { choices?: Array<{ finish_reason?: string; finishReason?: string }> };
+      }
+    | null;
+
+  if (!value) return null;
+
+  const choices =
+    value.choices ??
+    value.data?.choices ??
+    value.response?.choices;
+
+  const finishReason = choices?.[0]?.finish_reason ?? choices?.[0]?.finishReason;
+  return typeof finishReason === "string" ? finishReason : null;
+};
+
+const normalizeTaskSummary = (value: string) => {
+  const withoutTags = value.replace(/<\/?task_summary>/g, "");
+  return withoutTags.replace(/\s+/g, " ").trim();
+};
+
+const extractCommandName = (command: string) => {
+  const trimmed = command.trim();
+  if (!trimmed) return "command";
+  return trimmed.split(/\s+/)[0] ?? "command";
+};
+
+const isToolArgumentsParseError = (error: unknown) =>
+  error instanceof Error &&
+  error.message.includes("Failed to parse JSON with backticks");
+
+const resolveAgentErrorType = (error: unknown) => {
+  if (error instanceof Error && error.message.includes("timed out")) {
+    return "agent_timeout";
+  }
+  if (isToolArgumentsParseError(error)) {
+    return "tool_call_parse_failed";
+  }
+  return "agent_error";
+};
+
+const isTimeoutError = (error: unknown) =>
+  error instanceof Error && error.message.toLowerCase().includes("timed out");
+
+const logLlmTiming = (label: string, modelName: string | null, startedAt: number) => {
+  const durationMs = Date.now() - startedAt;
+  console.info("[LLM timing]", {
+    label,
+    modelName: modelName ?? "unknown",
+    durationMs,
+  });
+};
+
+const resolveAgentErrorMessage = (errorType: string) => {
+  if (errorType === "tool_call_parse_failed") {
+    return "The model returned malformed tool arguments. Please try again or switch models.";
+  }
+  if (errorType === "agent_timeout") {
+    return "The agent took too long to respond. Please try again or simplify the request.";
+  }
+  return "The model request failed. Please try again.";
+};
 
 export const codeAgentFunction = inngest.createFunction(
   { id: "code-agent" },
   { event: "code-agent/run" },
-  async ({ event, step }) => {
-    const sandboxId = await step.run("get-sandbox-id", async () => {
-      const sandbox = await Sandbox.create(getSandboxTemplateName());
-      await sandbox.setTimeout(SANDBOX_TIMEOUT);
-      return sandbox.sandboxId;
+  async ({ event, step, publish }) => {
+    const logAgent = (
+      message: string,
+      extra?: Record<string, unknown>,
+      level: "info" | "warn" | "error" = "info",
+    ) => {
+      const payload = {
+        eventId: event.id,
+        projectId: event.data?.projectId ?? null,
+        userId: event.data?.userId ?? null,
+        orgId: event.data?.orgId ?? null,
+        ...extra,
+      };
+      if (level === "error") {
+        console.error("[code-agent]", message, payload);
+      } else if (level === "warn") {
+        console.warn("[code-agent]", message, payload);
+      } else {
+        console.info("[code-agent]", message, payload);
+      }
+    };
+
+    logAgent("run started");
+    const projectAccess = await step.run("get-project-access", async () => {
+      const project = await prisma.project.findUnique({
+        where: {
+          id: event.data.projectId,
+        },
+        select: {
+          orgId: true,
+          userId: true,
+          sandboxId: true,
+          sandboxUpdatedAt: true,
+        },
+      });
+
+      return {
+        orgId: (event.data?.orgId as string | undefined) ?? project?.orgId ?? null,
+        userId: (event.data?.userId as string | undefined) ?? project?.userId ?? null,
+        sandboxId: project?.sandboxId ?? null,
+        sandboxUpdatedAt: project?.sandboxUpdatedAt ?? null,
+      };
     });
 
-    const previousMessages = await step.run("get-previous-messages", async () => {
-      const formattedMessages: Message[] = [];
+    logAgent("resolved project access", projectAccess ?? undefined);
+    const orgId = projectAccess?.orgId ?? null;
+    const userId = projectAccess?.userId ?? null;
+    const resolvedUserId = userId ?? event.data.userId;
 
-      const messages = await prisma.message.findMany({
+    if (!resolvedUserId) {
+      logAgent("missing user id", undefined, "error");
+      throw new Error("Project user ID is missing.");
+    }
+
+    const requestValue =
+      typeof event.data.value === "string"
+        ? event.data.value
+        : typeof event.data.userMessage?.content === "string"
+          ? event.data.userMessage.content
+          : "";
+    const threadId =
+      typeof event.data.threadId === "string" && event.data.threadId.trim()
+        ? event.data.threadId.trim()
+        : event.data.projectId;
+    const channelKey =
+      typeof event.data.channelKey === "string" && event.data.channelKey.trim()
+        ? event.data.channelKey.trim()
+        : resolvedUserId;
+    const runInput =
+      event.data.userMessage && typeof event.data.userMessage.content === "string"
+        ? event.data.userMessage
+        : requestValue;
+
+    logAgent("resolving sandbox");
+    const sandboxResult = await step.run("get-sandbox-id", async () => {
+      const latestFragment = await prisma.fragment.findFirst({
         where: {
-          projectId: event.data.projectId,
+          message: {
+            projectId: event.data.projectId,
+          },
         },
         orderBy: {
           createdAt: "desc",
         },
-        take: 5,
+        select: {
+          sandboxUrl: true,
+        },
       });
 
-      for (const message of messages) {
-        formattedMessages.push({
-          type: "text",
-          role: message.role === "ASSISTANT" ? "assistant" : "user",
-          content: message.content,
-        })
-      }
+      const managedSandbox = await ensureProjectSandbox({
+        projectId: event.data.projectId,
+        userId: resolvedUserId,
+        orgId,
+        projectSandboxId: projectAccess?.sandboxId ?? null,
+        inferredSandboxId: extractSandboxIdFromUrl(
+          latestFragment?.sandboxUrl ?? null,
+        ),
+      });
 
-      return formattedMessages.reverse();
+      await recordSandboxUsage({
+        projectId: event.data.projectId,
+        userId,
+        orgId,
+        lastUpdatedAt: projectAccess?.sandboxUpdatedAt
+          ? new Date(projectAccess.sandboxUpdatedAt)
+          : null,
+      });
+
+      return { sandboxId: managedSandbox.sandboxId };
+    });
+    logAgent("sandbox resolved", sandboxResult ?? undefined);
+
+    if (!sandboxResult?.sandboxId) {
+      logAgent("sandbox unavailable", undefined, "error");
+      const message = buildUserFailureMessage({
+        errorType: "sandbox_limit_reached",
+        errorMessage:
+          "Something went wrong while starting the sandbox. Please try again.",
+        finishReason: null,
+        summaryFound: false,
+        filesCount: 0,
+      });
+
+      await step.run("sandbox-limit-error", async () => {
+        await recordAgentFailure({
+          projectId: event.data.projectId,
+          sandboxId: projectAccess?.sandboxId ?? null,
+          errorType: "sandbox_limit_reached",
+          errorMessage:
+            "Something went wrong while starting the sandbox. Please try again.",
+          summaryFound: false,
+          filesCount: 0,
+        });
+        return prisma.message.create({
+          data: {
+            projectId: event.data.projectId,
+            content: message,
+            role: "ASSISTANT",
+            type: "ERROR",
+          },
+        });
+      });
+
+      return { error: "sandbox_limit_reached" };
+    }
+
+    const sandboxId = sandboxResult.sandboxId;
+    const cooldownSandbox = async () => {
+      try {
+        await Sandbox.setTimeout(sandboxId, SANDBOX_TIMEOUT);
+      } catch (error) {
+        console.warn("Failed to reset sandbox timeout after error", error);
+      }
+    };
+
+    const platformSettings = await step.run("get-platform-settings", async () => {
+      try {
+        return await getPlatformSettings();
+      } catch (error) {
+        console.warn("Failed to load platform settings", error);
+        return null;
+      }
     });
 
-    const state = createState<AgentState>(
-      {
-        summary: "",
-        files: {},
-      },
-      {
-        messages: previousMessages,
-      },
+    const efficiencySettings = resolveTokenEfficiencySettings(
+      platformSettings as Awaited<ReturnType<typeof getPlatformSettings>> | null,
+    );
+    const tokenEfficiencyEnabled = efficiencySettings.enabled;
+    const historyLimit = tokenEfficiencyEnabled
+      ? clampNumber(efficiencySettings.agentHistoryLimit, 1, 20)
+      : MAX_AGENT_HISTORY_RESULTS;
+    const contextSummaryLimit = tokenEfficiencyEnabled
+      ? clampNumber(efficiencySettings.contextSummaryMaxChars, 300, 3000)
+      : MAX_CONTEXT_SUMMARY_LENGTH;
+    const agentTimeoutMs = tokenEfficiencyEnabled
+      ? parseTimeoutMs(efficiencySettings.agentTimeoutMs, DEFAULT_AGENT_TIMEOUT_MS)
+      : parseTimeoutMs(process.env.LLM_AGENT_TIMEOUT_MS, DEFAULT_AGENT_TIMEOUT_MS);
+    const responseTimeoutMs = tokenEfficiencyEnabled
+      ? parseTimeoutMs(efficiencySettings.responseTimeoutMs, DEFAULT_RESPONSE_TIMEOUT_MS)
+      : parseTimeoutMs(process.env.LLM_RESPONSE_TIMEOUT_MS, DEFAULT_RESPONSE_TIMEOUT_MS);
+    const contextTimeoutMs = tokenEfficiencyEnabled
+      ? parseTimeoutMs(efficiencySettings.contextTimeoutMs, DEFAULT_CONTEXT_TIMEOUT_MS)
+      : parseTimeoutMs(process.env.LLM_CONTEXT_TIMEOUT_MS, DEFAULT_CONTEXT_TIMEOUT_MS);
+    const primaryModelTimeoutMs = parseTimeoutMs(
+      process.env.LLM_CODE_PRIMARY_TIMEOUT_MS,
+      DEFAULT_PRIMARY_MODEL_TIMEOUT_MS,
     );
 
-    const llmModels = await getLlmModels(event.data.orgId);
+    const llmModels = await getLlmModels(orgId);
 
-    const codeAgent = createAgent<AgentState>({
-      name: "code-agent",
-      description: "An expert coding agent",
-      system: PROMPT,
-      model: llmModels.code,
-      tools: [
-        createTool({
-          name: "terminal",
-          description: "Use the terminal to run commands",
-          parameters: z.object({
-            command: z.string(),
-          }),
-          handler: async ({ command }, { step }) => {
-            return await step?.run("terminal", async () => {
-              const buffers = { stdout: "", stderr: "" };
+    const createProgressMessage = async (content: string) => {
+      logAgent("progress", { content });
+      try {
+        await prisma.message.create({
+          data: {
+            projectId: event.data.projectId,
+            content,
+            role: "ASSISTANT",
+            type: "PROGRESS",
+          },
+        });
+      } catch (error) {
+        console.warn("Failed to record progress message", error);
+      }
+    };
 
-              try {
-                const sandbox = await getSandbox(sandboxId);
-                const result = await sandbox.commands.run(command, {
+    await createProgressMessage("Planning your request...");
+
+    const projectContext = await step.run("get-project-context", async () => {
+      try {
+        return await prisma.projectContext.findUnique({
+          where: { projectId: event.data.projectId },
+          select: { summary: true, results: true },
+        });
+      } catch (error) {
+        console.warn("Failed to load project context", error);
+        return null;
+      }
+    });
+
+    const priorContextSummary = projectContext?.summary
+      ? projectContext.summary.slice(0, contextSummaryLimit)
+      : null;
+
+    const priorResults = deserializeAgentResults(projectContext?.results, historyLimit);
+    const seedMessages: Message[] = priorContextSummary
+      ? [
+          {
+            type: "text",
+            role: "assistant",
+            content: `Project context summary:\n${priorContextSummary}`,
+          },
+        ]
+      : [];
+
+    const buildAgentState = () =>
+      createState<AgentState>(
+        {
+          summary: "",
+          files: {},
+          userId: resolvedUserId,
+        },
+        {
+          messages: seedMessages,
+          results: priorResults,
+          threadId,
+        },
+      );
+
+    const tools = [
+      createTool({
+        name: "terminal",
+        description: "Use the terminal to run commands",
+        parameters: z.object({
+          command: z.string(),
+        }),
+        handler: async ({ command }, { step }) => {
+          if (BLOCKED_COMMAND_PATTERNS.some((pattern) => pattern.test(command))) {
+            await createProgressMessage(`Blocked command: ${extractCommandName(command)}`);
+            return "Command blocked by policy. Do not run dev/build/start commands.";
+          }
+          await createProgressMessage(`Ran command: ${extractCommandName(command)}`);
+          return await step?.run("terminal", async () => {
+            const buffers = { stdout: "", stderr: "" };
+
+            try {
+              const sandbox = await getSandbox(sandboxId, SANDBOX_RUN_TIMEOUT);
+              const result = await runWithTimeout(
+                sandbox.commands.run(command, {
                   onStdout: (data: string) => {
                     buffers.stdout += data;
                   },
                   onStderr: (data: string) => {
                     buffers.stderr += data;
-                  }
-                });
-                return result.stdout;
-              } catch (e) {
-                console.error(
-                  `Command failed: ${e} \nstdout: ${buffers.stdout}\nstderror: ${buffers.stderr}`,
-                );
-                return `Command failed: ${e} \nstdout: ${buffers.stdout}\nstderr: ${buffers.stderr}`;
-              }
-            });
-          },
-        }),
-        createTool({
-          name: "createOrUpdateFiles",
-          description: "Create or update files in the sandbox",
-          parameters: z.object({
-            files: z.array(
-              z.object({
-                path: z.string(),
-                content: z.string(),
-              }),
-            ),
-          }),
-          handler: async (
-            { files },
-            { step, network }: Tool.Options<AgentState>
-          ) => {
-            const newFiles = await step?.run("createOrUpdateFiles", async () => {
-              try {
-                const updatedFiles = network.state.data.files || {};
-                const sandbox = await getSandbox(sandboxId);
-                for (const file of files) {
-                  await sandbox.files.write(file.path, file.content);
-                  updatedFiles[file.path] = file.content;
-                }
-
-                return updatedFiles;
-              } catch (e) {
-                return "Error: " + e;
-              }
-            });
-
-            if (typeof newFiles === "object") {
-              network.state.data.files = newFiles;
+                  },
+                }),
+                TERMINAL_COMMAND_TIMEOUT_MS,
+                "Terminal command timed out",
+              );
+              return truncateText(result.stdout ?? "", MAX_TOOL_OUTPUT_CHARS);
+            } catch (e) {
+              console.error(
+                `Command failed: ${e} \nstdout: ${buffers.stdout}\nstderror: ${buffers.stderr}`,
+              );
+              const combined = `Command failed: ${e} \nstdout: ${buffers.stdout}\nstderr: ${buffers.stderr}`;
+              return truncateText(combined, MAX_TOOL_OUTPUT_CHARS);
             }
-          }
-        }),
-        createTool({
-          name: "readFiles",
-          description: "Read files from the sandbox",
-          parameters: z.object({
-            files: z.array(z.string()),
-          }),
-          handler: async ({ files }, { step }) => {
-            return await step?.run("readFiles", async () => {
-              try {
-                const sandbox = await getSandbox(sandboxId);
-                const contents = [];
-                for (const file of files) {
-                  const content = await sandbox.files.read(file);
-                  contents.push({ path: file, content });
-                }
-                return JSON.stringify(contents);
-              } catch (e) {
-                return "Error: " + e;
-              }
-            })
-          },
-        })
-      ],
-      lifecycle: {
-        onResponse: async ({ result, network }) => {
-          const lastAssistantMessageText =
-            lastAssistantTextMessageContent(result);
-
-          if (lastAssistantMessageText && network) {
-            if (lastAssistantMessageText.includes("<task_summary>")) {
-              network.state.data.summary = lastAssistantMessageText;
-            }
-          }
-
-          return result;
+          });
         },
-      },
-    });
+      }),
+      createTool({
+        name: "createOrUpdateFiles",
+        description: "Create or update files in the sandbox",
+        parameters: z.object({
+          files: z.array(
+            z.object({
+              path: z.string(),
+              content: z.string(),
+            }),
+          ),
+        }),
+        handler: async (
+          { files },
+          { step, network }: Tool.Options<AgentState>
+        ) => {
+          if (files.length > 0) {
+            const fileList = files.map((file) => file.path).join(", ");
+            await createProgressMessage(
+              files.length === 1
+                ? `Updated file: ${fileList}`
+                : `Updated files: ${fileList}`,
+            );
+          }
 
-    const network = createNetwork<AgentState>({
-      name: "coding-agent-network",
-      agents: [codeAgent],
-      maxIter: 15,
-      defaultState: state,
-      router: async ({ network }) => {
-        const summary = network.state.data.summary;
+          const newFiles = await step?.run("createOrUpdateFiles", async () => {
+            try {
+              const updatedFiles = network.state.data.files || {};
+              const sandbox = await getSandbox(sandboxId, SANDBOX_RUN_TIMEOUT);
+              for (const file of files) {
+                await sandbox.files.write(file.path, file.content);
+                updatedFiles[file.path] = file.content;
+              }
 
-        if (summary) {
-          return;
+              return updatedFiles;
+            } catch (e) {
+              return "Error: " + e;
+            }
+          });
+
+          if (typeof newFiles === "object") {
+            network.state.data.files = newFiles;
+          }
+        }
+      }),
+      createTool({
+        name: "listFiles",
+        description: "List project files from the workspace",
+        parameters: z.object({
+          root: z.string(),
+          maxDepth: z.number().int().min(1).max(6),
+          limit: z.number().int().min(1).max(500),
+        }),
+        handler: async ({ root, maxDepth, limit }, { step }) => {
+          const safeRoot = sanitizeRelativePath(root);
+          const depth = clampNumber(
+            Number.isFinite(maxDepth) ? maxDepth : 4,
+            1,
+            6,
+          );
+          const maxItems = clampNumber(
+            Number.isFinite(limit) ? limit : 300,
+            1,
+            500,
+          );
+          await createProgressMessage(`Listing files in ${safeRoot}`);
+          return await step?.run("listFiles", async () => {
+            try {
+              const sandbox = await getSandbox(sandboxId, SANDBOX_RUN_TIMEOUT);
+              const command = `bash -lc 'cd /home/user && find ${safeRoot} -maxdepth ${depth} -type f 2>/dev/null | sed \"s|^./||\" | head -n ${maxItems}'`;
+              const result = await sandbox.commands.run(command);
+              return truncateText(result.stdout ?? "", MAX_TOOL_OUTPUT_CHARS);
+            } catch (e) {
+              return truncateText("Error: " + e, MAX_TOOL_OUTPUT_CHARS);
+            }
+          });
+        },
+      }),
+      createTool({
+        name: "readFiles",
+        description: "Read files from the sandbox",
+        parameters: z.object({
+          files: z.array(z.string()),
+        }),
+        handler: async ({ files }, { step }) => {
+          if (files.length > 0) {
+            const preview = files.slice(0, 3).join(", ");
+            const suffix = files.length > 3 ? ` and ${files.length - 3} more` : "";
+            await createProgressMessage(
+              files.length === 1
+                ? `Opened file: ${preview}`
+                : `Opened files: ${preview}${suffix}`,
+            );
+          }
+          return await step?.run("readFiles", async () => {
+            try {
+              const sandbox = await getSandbox(sandboxId, SANDBOX_RUN_TIMEOUT);
+              const contents = [];
+              for (const file of files) {
+                const content = await sandbox.files.read(file);
+                contents.push({
+                  path: file,
+                  content: truncateText(content, MAX_READ_FILE_CHARS),
+                });
+              }
+              return truncateText(JSON.stringify(contents), MAX_TOOL_OUTPUT_CHARS);
+            } catch (e) {
+              return truncateText("Error: " + e, MAX_TOOL_OUTPUT_CHARS);
+            }
+          })
+        },
+      }),
+      createTool({
+        name: "readFileSnippet",
+        description: "Read a specific line range from a file",
+        parameters: z.object({
+          path: z.string(),
+          startLine: z.number().int().min(1),
+          endLine: z.number().int().min(1),
+        }),
+        handler: async ({ path, startLine, endLine }, { step }) => {
+          await createProgressMessage(`Opened snippet: ${path} (${startLine}-${endLine})`);
+          return await step?.run("readFileSnippet", async () => {
+            try {
+              const sandbox = await getSandbox(sandboxId, SANDBOX_RUN_TIMEOUT);
+              const content = await sandbox.files.read(path);
+              const lines = content.split(/\r?\n/);
+              const safeStart = clampNumber(startLine, 1, lines.length);
+              const safeEnd = clampNumber(endLine, safeStart, lines.length);
+              const snippet = lines.slice(safeStart - 1, safeEnd).join("\n");
+              const payload = {
+                path,
+                startLine: safeStart,
+                endLine: safeEnd,
+                content: truncateText(snippet, MAX_READ_SNIPPET_CHARS),
+              };
+              return truncateText(JSON.stringify(payload), MAX_TOOL_OUTPUT_CHARS);
+            } catch (e) {
+              return truncateText("Error: " + e, MAX_TOOL_OUTPUT_CHARS);
+            }
+          });
+        },
+      }),
+      createTool({
+        name: "progress",
+        description: "Record a user-visible step update",
+        parameters: z.object({
+          content: z.string().min(1),
+        }),
+        handler: async ({ content }) => {
+          await createProgressMessage(content);
+          return "ok";
+        },
+      }),
+    ];
+
+    const lifecycle: Agent.Lifecycle<AgentState> = {
+      onResponse: async ({
+        result,
+        network,
+      }: {
+        result: AgentResultType;
+        network?: { state: { data: AgentState } };
+      }) => {
+        if (!network) {
+          return result;
         }
 
-        return codeAgent;
+        const finishReason = extractFinishReasonFromRaw(result.raw);
+        if (finishReason) {
+          network.state.data.finishReason = finishReason;
+        }
+        if (finishReason === "length" || finishReason === "content_filter") {
+          network.state.data.error =
+            "The model hit the output limit before completing the task. Please try again with a shorter request or a different model.";
+          return result;
+        }
+
+        const lastAssistantMessageText =
+          lastAssistantTextMessageContent(result);
+
+        if (lastAssistantMessageText) {
+          network.state.data.lastAssistantMessage =
+            lastAssistantMessageText.slice(0, 4000);
+        }
+
+        if (lastAssistantMessageText?.includes("<task_summary>")) {
+          network.state.data.summary = lastAssistantMessageText;
+        }
+
+        return result;
       },
+    };
+
+    const buildCodeAgent = (model: typeof llmModels.code) =>
+      createAgent<AgentState>({
+        name: "code-agent",
+        description: "An expert coding agent",
+        system: PROMPT,
+        model,
+        tools,
+        lifecycle,
+      });
+
+    const buildNetwork = (agent: ReturnType<typeof buildCodeAgent>, state: ReturnType<typeof buildAgentState>) =>
+      createNetwork<AgentState>({
+        name: "coding-agent-network",
+        agents: [agent],
+        maxIter: 15,
+        defaultState: state,
+        router: async ({ network }) => {
+          const summary = network.state.data.summary;
+
+          if (network.state.data.error) {
+            return;
+          }
+
+          if (summary) {
+            return;
+          }
+
+          return agent;
+        },
+      });
+
+    const publishStream =
+      typeof publish === "function" && channelKey
+        ? async (chunk: AgentMessageChunk) => {
+            await publish(getAgentStreamChannel(channelKey).agent_stream(chunk));
+          }
+        : null;
+
+    const runWithAgent = async (
+      model: typeof llmModels.code,
+      modelName: string | null,
+      timeoutOverrideMs: number | null,
+      stepLabel: string,
+    ) => {
+      const state = buildAgentState();
+      const agent = buildCodeAgent(model);
+      const network = buildNetwork(agent, state);
+      const startedAt = Date.now();
+      logAgent("llm run started", { modelName, stepLabel });
+      const runPromise = network.run(runInput, {
+        state,
+        streaming: publishStream
+          ? { publish: publishStream, simulateChunking: false }
+          : undefined,
+      });
+      const timeoutMs =
+        typeof timeoutOverrideMs === "number" && timeoutOverrideMs > 0
+          ? timeoutOverrideMs
+          : agentTimeoutMs;
+      const result =
+        timeoutMs > 0
+          ? await runWithTimeout(runPromise, timeoutMs, "Coding agent run")
+          : await runPromise;
+      logLlmTiming("code-agent", modelName, startedAt);
+      logAgent("llm run completed", { modelName, durationMs: Date.now() - startedAt });
+      return { result, modelName };
+    };
+
+    type CodeRunResult = {
+      result: { state: { data: AgentState; results?: AgentResultType[] } };
+      modelName: string | null;
+    };
+
+    let runResult: CodeRunResult;
+
+    try {
+      runResult = (await runWithAgent(
+        llmModels.code,
+        llmModels.modelNames.code,
+        primaryModelTimeoutMs,
+        `code-agent:${llmModels.modelNames.code ?? "primary"}`,
+      )) as unknown as CodeRunResult;
+    } catch (error) {
+      if (isTimeoutError(error) && llmModels.codeFallback) {
+        await createProgressMessage(
+          "Primary model is slow. Switching to fallback model...",
+        );
+        try {
+          runResult = (await runWithAgent(
+            llmModels.codeFallback,
+            llmModels.modelNames.codeFallback ?? llmModels.modelNames.code,
+            null,
+            `code-agent:${llmModels.modelNames.codeFallback ?? "fallback"}`,
+          )) as unknown as CodeRunResult;
+        } catch (fallbackError) {
+          const errorType = resolveAgentErrorType(fallbackError);
+          const errorMessage = resolveAgentErrorMessage(errorType);
+          await recordAgentFailure({
+            projectId: event.data.projectId,
+            sandboxId,
+            errorType,
+            errorMessage: String(fallbackError),
+            summaryFound: false,
+            filesCount: 0,
+          });
+          const message = buildUserFailureMessage({
+            errorType,
+            errorMessage,
+            finishReason: null,
+            summaryFound: false,
+            filesCount: 0,
+          });
+          await prisma.message.create({
+            data: {
+              projectId: event.data.projectId,
+              content: message,
+              role: "ASSISTANT",
+              type: "ERROR",
+            },
+          });
+          await cooldownSandbox();
+          return { error: errorType };
+        }
+      } else if (isToolArgumentsParseError(error) && llmModels.codeFallback) {
+        try {
+          runResult = (await runWithAgent(
+            llmModels.codeFallback,
+            llmModels.modelNames.codeFallback ?? llmModels.modelNames.code,
+            null,
+            `code-agent:${llmModels.modelNames.codeFallback ?? "fallback"}`,
+          )) as unknown as CodeRunResult;
+        } catch (fallbackError) {
+          const errorType = resolveAgentErrorType(fallbackError);
+          const errorMessage = resolveAgentErrorMessage(errorType);
+          await recordAgentFailure({
+            projectId: event.data.projectId,
+            sandboxId,
+            errorType,
+            errorMessage: String(fallbackError),
+            summaryFound: false,
+            filesCount: 0,
+          });
+          const message = buildUserFailureMessage({
+            errorType,
+            errorMessage,
+            finishReason: null,
+            summaryFound: false,
+            filesCount: 0,
+          });
+          await prisma.message.create({
+            data: {
+              projectId: event.data.projectId,
+              content: message,
+              role: "ASSISTANT",
+              type: "ERROR",
+            },
+          });
+          await cooldownSandbox();
+          return { error: errorType };
+        }
+      } else {
+        const errorType = resolveAgentErrorType(error);
+        const errorMessage = resolveAgentErrorMessage(errorType);
+        await recordAgentFailure({
+          projectId: event.data.projectId,
+          sandboxId,
+          errorType,
+          errorMessage: String(error),
+          summaryFound: false,
+          filesCount: 0,
+        });
+        const message = buildUserFailureMessage({
+          errorType,
+          errorMessage,
+          finishReason: null,
+          summaryFound: false,
+          filesCount: 0,
+        });
+        await prisma.message.create({
+          data: {
+            projectId: event.data.projectId,
+            content: message,
+            role: "ASSISTANT",
+            type: "ERROR",
+          },
+        });
+        await cooldownSandbox();
+        return { error: errorType };
+      }
+    }
+
+    const result = runResult.result;
+    const codeModelName = runResult.modelName ?? llmModels.modelNames.code;
+
+    const existingTitle = await step.run("get-existing-title", async () => {
+      const fragment = await prisma.fragment.findFirst({
+        where: {
+          message: {
+            projectId: event.data.projectId,
+          },
+        },
+        orderBy: {
+          createdAt: "asc",
+        },
+        select: {
+          title: true,
+        },
+      });
+
+      return fragment?.title ?? null;
     });
-
-    const result = await network.run(event.data.value, { state });
-
-    const fragmentTitleGenerator = createAgent({
-      name: "fragment-title-generator",
-      description: "A fragment title generator",
-      system: FRAGMENT_TITLE_PROMPT,
-      model: llmModels.title,
-    })
 
     const responseGenerator = createAgent({
       name: "response-generator",
@@ -208,34 +1213,208 @@ export const codeAgentFunction = inngest.createFunction(
       model: llmModels.response,
     });
 
-    const { 
-      output: fragmentTitleOuput
-    } = await fragmentTitleGenerator.run(result.state.data.summary);
-    const { 
-      output: responseOutput
-    } = await responseGenerator.run(result.state.data.summary);
+    let fragmentTitleResult: { output: Message[]; raw?: unknown } | null = null;
+    let fragmentTitle: string | null = existingTitle;
+    let responseResult: { output: Message[]; raw?: unknown } | null = null;
+    let responseOutput: Message[] = [];
+    let responseUsage: UsageShape | null = null;
+
+    if (!fragmentTitle) {
+      const fragmentTitleGenerator = createAgent({
+        name: "fragment-title-generator",
+        description: "A fragment title generator",
+        system: FRAGMENT_TITLE_PROMPT,
+        model: llmModels.title,
+      });
+
+      const titleStart = Date.now();
+      fragmentTitleResult = await step.run("llm-fragment-title", async () =>
+        fragmentTitleGenerator.run(result.state.data.summary),
+      );
+      logLlmTiming("fragment-title", llmModels.modelNames.title, titleStart);
+      fragmentTitle = parseAgentOutput(fragmentTitleResult.output);
+    }
 
     const isError =
+      Boolean(result.state.data.error) ||
       !result.state.data.summary ||
       Object.keys(result.state.data.files || {}).length === 0;
 
+    const resolvedSummary = result.state.data.summary
+      ? normalizeTaskSummary(result.state.data.summary)
+      : null;
+
+    if (!isError) {
+      await createProgressMessage("Generating response...");
+
+      try {
+        const responseStart = Date.now();
+        const responsePromise = step.run("llm-response", async () =>
+          responseGenerator.run(result.state.data.summary),
+        );
+        responseResult =
+          responseTimeoutMs > 0
+            ? await runWithTimeout(
+                responsePromise,
+                responseTimeoutMs,
+                "Response generation",
+              )
+            : await responsePromise;
+        logLlmTiming("response", llmModels.modelNames.response, responseStart);
+        responseOutput = responseResult.output;
+        responseUsage = extractUsageFromAgentResult(responseResult);
+      } catch (error) {
+        console.warn("Response generator failed or timed out", error);
+        const fallback = resolvedSummary
+          ? `Here's what I built: ${resolvedSummary}`
+          : "Your task completed, but the response message could not be generated.";
+        responseOutput = [
+          { type: "text", role: "assistant", content: fallback },
+        ];
+      }
+    }
+
+    let contextSummaryResult: { output: Message[]; raw?: unknown } | null = null;
+    let nextContextSummary: string | null = null;
+    const nextHistoryResults =
+      !isError && result.state?.results
+        ? serializeAgentResults(result.state.results, historyLimit)
+        : null;
+
+    if (resolvedSummary && !isError) {
+      const contextSummaryGenerator = createAgent({
+        name: "context-summary-generator",
+        description: "Generates a compact project context summary",
+        system: CONTEXT_SUMMARY_PROMPT,
+        model: llmModels.response,
+      });
+
+      try {
+        const contextStart = Date.now();
+        const contextPromise = step.run("llm-context-summary", async () =>
+          contextSummaryGenerator.run(
+            JSON.stringify({
+              previous_summary: priorContextSummary ?? "",
+              user_request: requestValue,
+              task_summary: resolvedSummary,
+            }),
+          ),
+        );
+        contextSummaryResult =
+          contextTimeoutMs > 0
+            ? await runWithTimeout(
+                contextPromise,
+                contextTimeoutMs,
+                "Context summary generation",
+              )
+            : await contextPromise;
+        logLlmTiming("context-summary", llmModels.modelNames.response, contextStart);
+      } catch (error) {
+        console.warn("Context summary generation failed or timed out", error);
+        contextSummaryResult = null;
+      }
+
+      if (contextSummaryResult) {
+        const parsedContextSummary = parseAgentOutput(contextSummaryResult.output);
+      if (parsedContextSummary) {
+        nextContextSummary = parsedContextSummary.slice(0, contextSummaryLimit);
+      }
+    }
+    }
+
+    await step.run("record-llm-usage", async () => {
+      const usageByModel = [
+        {
+          modelName: codeModelName,
+          usage: extractUsageFromNetwork(result),
+        },
+      ];
+
+      if (fragmentTitleResult) {
+        usageByModel.push({
+          modelName: llmModels.modelNames.title,
+          usage: extractUsageFromAgentResult(fragmentTitleResult),
+        });
+      }
+
+      if (responseUsage) {
+        usageByModel.push({
+          modelName: llmModels.modelNames.response,
+          usage: responseUsage,
+        });
+      }
+
+      if (contextSummaryResult) {
+        usageByModel.push({
+          modelName: llmModels.modelNames.response,
+          usage: extractUsageFromAgentResult(contextSummaryResult),
+        });
+      }
+
+      for (const item of usageByModel) {
+        await recordLlmUsage({
+          userId,
+          orgId,
+          provider: llmModels.provider,
+          model: item.modelName ?? "unknown",
+          promptTokens: item.usage?.promptTokens ?? 0,
+          completionTokens: item.usage?.completionTokens ?? 0,
+          totalTokens: item.usage?.totalTokens ?? 0,
+          costUsd: item.usage?.costUsd ?? 0,
+        });
+      }
+    });
+
     const sandboxUrl = await step.run("get-sandbox-url", async () => {
-      const sandbox = await getSandbox(sandboxId);
-      const host = sandbox.getHost(3000);
+      if (!isError) {
+        await ensureSandboxPreviewReady(sandboxId);
+      }
+
+      const sandbox = await getSandbox(sandboxId, SANDBOX_RUN_TIMEOUT);
+      const host = sandbox.getHost(SANDBOX_PREVIEW_PORT);
       return `https://${host}`;
     });
 
     await step.run("save-result", async () => {
       if (isError) {
+        const filesCount = Object.keys(result.state.data.files || {}).length;
+        const summaryFound = Boolean(result.state.data.summary);
+        const errorType = result.state.data.error
+          ? "agent_error"
+          : !summaryFound
+            ? "missing_summary"
+            : filesCount === 0
+              ? "no_files"
+              : "unknown_error";
+        const message = buildUserFailureMessage({
+          errorType,
+          errorMessage: result.state.data.error ?? null,
+          finishReason: result.state.data.finishReason ?? null,
+          summaryFound,
+          filesCount,
+        });
+
+        await recordAgentFailure({
+          projectId: event.data.projectId,
+          sandboxId,
+          errorType,
+          errorMessage: result.state.data.error ?? null,
+          finishReason: result.state.data.finishReason ?? null,
+          lastAssistantMessage: result.state.data.lastAssistantMessage ?? null,
+          summaryFound,
+          filesCount,
+        });
         return await prisma.message.create({
           data: {
             projectId: event.data.projectId,
-            content: "Something went wrong. Please try again.",
+            content: message,
             role: "ASSISTANT",
             type: "ERROR",
           },
         });
       }
+
+      const resolvedTitle = fragmentTitle ?? "Fragment";
 
       return await prisma.message.create({
         data: {
@@ -246,7 +1425,8 @@ export const codeAgentFunction = inngest.createFunction(
           fragment: {
             create: {
               sandboxUrl: sandboxUrl,
-              title: parseAgentOutput(fragmentTitleOuput),
+              title: resolvedTitle,
+              summary: resolvedSummary,
               files: result.state.data.files,
             },
           },
@@ -254,9 +1434,56 @@ export const codeAgentFunction = inngest.createFunction(
       })
     });
 
+    const fallbackSummary = nextContextSummary
+      ?? priorContextSummary
+      ?? (resolvedSummary ? resolvedSummary.slice(0, contextSummaryLimit) : null);
+
+    if (fallbackSummary || nextHistoryResults) {
+      await step.run("save-project-context", async () => {
+        await prisma.projectContext.upsert({
+          where: { projectId: event.data.projectId },
+          update: {
+            summary: fallbackSummary ?? "Project context summary pending.",
+            results: (nextHistoryResults ?? undefined) as never,
+          },
+          create: {
+            projectId: event.data.projectId,
+            summary: fallbackSummary ?? "Project context summary pending.",
+            results: (nextHistoryResults ?? undefined) as never,
+          },
+        });
+      });
+    }
+
+    await step.run("record-sandbox-usage", async () => {
+      const project = await prisma.project.findUnique({
+        where: { id: event.data.projectId },
+        select: { sandboxUpdatedAt: true },
+      });
+      await recordSandboxUsage({
+        projectId: event.data.projectId,
+        userId,
+        orgId,
+        lastUpdatedAt: project?.sandboxUpdatedAt ?? null,
+      });
+      await touchProjectSandbox({
+        projectId: event.data.projectId,
+        sandboxId,
+        sandboxUrl,
+      });
+    });
+
+    await step.run("cooldown-sandbox", async () => {
+      try {
+        await Sandbox.setTimeout(sandboxId, SANDBOX_TIMEOUT);
+      } catch (error) {
+        console.warn("Failed to reset sandbox timeout", error);
+      }
+    });
+
     return { 
       url: sandboxUrl,
-      title: "Fragment",
+      title: fragmentTitle ?? "Fragment",
       files: result.state.data.files,
       summary: result.state.data.summary,
     };

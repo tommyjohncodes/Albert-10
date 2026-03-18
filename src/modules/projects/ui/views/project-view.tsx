@@ -31,8 +31,7 @@ export const ProjectView = ({ projectId }: Props) => {
   const trpc = useTRPC();
   const [activeFragment, setActiveFragment] = useState<FragmentPreview | null>(null);
   const [tabState, setTabState] = useState<"preview" | "code">("preview");
-  const canRefreshPreview = Boolean(activeFragment?.id);
-  const canOpenPreview = Boolean(activeFragment?.sandboxUrl);
+  const canPreview = Boolean(activeFragment?.sandboxUrl);
   const fragmentFilesQuery = useQuery(
     trpc.messages.getFragmentFiles.queryOptions(
       { fragmentId: activeFragment?.id ?? "" },
@@ -113,7 +112,7 @@ export const ProjectView = ({ projectId }: Props) => {
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={!canRefreshPreview}
+                  disabled={!canPreview}
                   onClick={() => {
                     window.dispatchEvent(new CustomEvent("albert:preview-refresh"));
                   }}
@@ -134,7 +133,7 @@ export const ProjectView = ({ projectId }: Props) => {
                   <Button
                     size="sm"
                     variant="outline"
-                  disabled={!canOpenPreview}
+                    disabled={!canPreview}
                     onClick={() => {
                       window.dispatchEvent(new CustomEvent("albert:preview-open"));
                     }}
@@ -146,9 +145,7 @@ export const ProjectView = ({ projectId }: Props) => {
               </div>
             </div>
             <TabsContent value="preview">
-              {!!activeFragment && (
-                <FragmentWeb data={activeFragment} projectId={projectId} />
-              )}
+              {!!activeFragment && <FragmentWeb data={activeFragment} />}
             </TabsContent>
             <TabsContent value="code" className="min-h-0">
               {fragmentFilesQuery.isPending && (

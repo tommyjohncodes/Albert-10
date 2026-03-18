@@ -30,6 +30,25 @@ if [ ! -d node_modules/tw-animate-css ]; then
   npm install tw-animate-css --no-fund --no-audit >> /var/tmp/next-preview.log 2>&1 || true
 fi
 
+# Ensure lib/utils.ts exists (required by all shadcn components)
+# Handles projects with or without a src/ directory
+if [ -d src ]; then
+  UTILS_PATH="src/lib/utils.ts"
+else
+  UTILS_PATH="lib/utils.ts"
+fi
+if [ ! -f "$UTILS_PATH" ]; then
+  mkdir -p "$(dirname "$UTILS_PATH")"
+  cat > "$UTILS_PATH" << 'UTILS_EOF'
+import { type ClassValue, clsx } from "clsx"
+import { twMerge } from "tailwind-merge"
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs))
+}
+UTILS_EOF
+fi
+
 # Start Next.js in a detached subshell so E2B does not track the child process
 (
   nohup bash -lc 'cd /home/user && NEXT_TELEMETRY_DISABLED=1 npx next dev --turbopack --hostname 0.0.0.0 --port ${SANDBOX_PREVIEW_PORT}' >/var/tmp/next-preview.log 2>&1 &

@@ -22,10 +22,7 @@ import {
   touchProjectSandbox,
 } from "@/lib/sandbox-instance";
 import { recordSandboxUsage } from "@/lib/sandbox-usage";
-import {
-  ensureSandboxPreviewReady,
-  SANDBOX_PREVIEW_PORT,
-} from "@/lib/sandbox-preview";
+import { SANDBOX_PREVIEW_PORT } from "@/lib/sandbox-preview";
 import {
   getPlatformSettings,
   resolveTokenEfficiencySettings,
@@ -1246,7 +1243,9 @@ export const codeAgentFunction = inngest.createFunction(
       : null;
 
     if (!isError) {
-      await createProgressMessage("Generating response...");
+      await step.run("generating-response-progress", () =>
+        createProgressMessage("Generating response..."),
+      );
 
       try {
         const responseStart = Date.now();
@@ -1367,10 +1366,6 @@ export const codeAgentFunction = inngest.createFunction(
     });
 
     const sandboxUrl = await step.run("get-sandbox-url", async () => {
-      if (!isError) {
-        await ensureSandboxPreviewReady(sandboxId);
-      }
-
       const sandbox = await getSandbox(sandboxId, SANDBOX_RUN_TIMEOUT);
       const host = sandbox.getHost(SANDBOX_PREVIEW_PORT);
       return `https://${host}`;

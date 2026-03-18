@@ -19,7 +19,7 @@ const TX_OPTIONS = {
 const getSandboxTemplateName = () =>
   process.env.E2B_TEMPLATE_NAME ??
   process.env.E2B_TEMPLATE ??
-  "vibe-nextjs-test-2";
+  "albert-nextjs-dev";
 
 type TxClient = Prisma.TransactionClient;
 
@@ -321,9 +321,9 @@ const createSandbox = async (
   try {
     sandbox = await Sandbox.betaCreate(templateName, {
       timeoutMs: SANDBOX_RUN_TIMEOUT,
-      lifecycle: { onTimeout: "pause" },
     });
   } catch (error) {
+    console.error("[sandbox] E2B creation error (raw):", error);
     const message = error instanceof Error ? error.message : "Unknown error";
     throw new Error(
       `Failed to create sandbox using template "${templateName}": ${message}`,

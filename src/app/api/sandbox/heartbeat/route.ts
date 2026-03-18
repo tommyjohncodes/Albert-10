@@ -17,7 +17,7 @@ import { SANDBOX_TIMEOUT } from "@/inngest/types";
 import { recordSandboxUsage } from "@/lib/sandbox-usage";
 
 /** Only extend sandbox timeout / record usage at most this often (minimizes E2B usage). */
-const EXTEND_COOLDOWN_MS = 30_000;
+const EXTEND_COOLDOWN_MS = 15_000;
 import { ensureSandboxElementPicker } from "@/lib/sandbox-element-picker";
 
 const extractSandboxId = (sandboxUrl: string) => {

@@ -95,164 +95,162 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  if (!fragment.sandboxUrl) {
-    return NextResponse.json({ error: "Sandbox URL missing" }, { status: 400 });
-  }
+  const sandboxId = fragment.sandboxUrl ? extractSandboxId(fragment.sandboxUrl) : null;
 
-  const sandboxId = extractSandboxId(fragment.sandboxUrl);
-  if (!sandboxId) {
-    return NextResponse.json({ error: "Invalid sandbox URL" }, { status: 400 });
-  }
+  // Force a fresh sandbox when the URL is missing/invalid (e.g. cleared after a prior failure)
+  let shouldForceNew = !sandboxId;
 
-  try {
-    const sandbox = await Sandbox.connect(sandboxId);
-    await ensureSandboxPreviewReady(sandboxId);
-    const sandboxUrl = `https://${sandbox.getHost(SANDBOX_PREVIEW_PORT)}`;
-    const pickerStatus = await ensureSandboxElementPicker(sandbox);
-
-    const lastUpdatedAt = fragment.message.project.sandboxUpdatedAt;
-    const shouldExtend =
-      !lastUpdatedAt ||
-      Date.now() - lastUpdatedAt.getTime() >= EXTEND_COOLDOWN_MS;
-
-    if (shouldExtend) {
-      await sandbox.setTimeout(SANDBOX_TIMEOUT);
-      await recordSandboxUsage({
-        projectId: fragment.message.project.id,
-        userId,
-        orgId: fragment.message.project.orgId,
-        lastUpdatedAt: fragment.message.project.sandboxUpdatedAt,
-      });
-      await touchProjectSandbox({
-        projectId: fragment.message.project.id,
-        sandboxId,
-        sandboxUrl,
-      });
-    }
-
-    if (sandboxUrl !== fragment.sandboxUrl) {
-      await prisma.fragment.update({
-        where: { id: fragment.id },
-        data: { sandboxUrl },
-      });
-    }
-
-    return NextResponse.json({
-      ok: true,
-      sandboxUrl,
-      pickerReload: pickerStatus.updated,
-    });
-  } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : "Unknown error";
-    const shouldForceNew = isSandboxNotFound(error);
-    console.error("[sandbox] heartbeat failed", {
-      userId,
-      fragmentId,
-      error: errorMessage,
-      forceNew: shouldForceNew,
-    });
-    if (shouldForceNew) {
-      try {
-        await prisma.project.update({
-          where: { id: fragment.message.project.id },
-          data: { sandboxId: null, sandboxUpdatedAt: null },
-        });
-        await prisma.sandboxInstance.updateMany({
-          where: { sandboxId },
-          data: { state: SandboxState.TERMINATED, terminatedAt: new Date() },
-        });
-        await prisma.fragment.update({
-          where: { id: fragment.id },
-          data: { sandboxUrl: "" },
-        });
-      } catch (cleanupError) {
-        console.warn("[sandbox] cleanup failed", cleanupError);
-      }
-    }
+  if (sandboxId) {
     try {
-      const projectFragments = await prisma.fragment.findMany({
-        where: {
-          message: {
-            projectId: fragment.message.project.id,
-          },
-        },
-        select: {
-          files: true,
-          createdAt: true,
-        },
-        orderBy: {
-          createdAt: "asc",
-        },
-      });
-
-      const filesToWrite: Record<string, string> = {};
-      for (const projectFragment of projectFragments) {
-        const files = projectFragment.files;
-        if (!files || typeof files !== "object") continue;
-        for (const [path, content] of Object.entries(files)) {
-          if (typeof content === "string") {
-            filesToWrite[path] = content;
-          }
-        }
-      }
-
-      const managedSandbox = await ensureProjectSandbox({
-        projectId: fragment.message.project.id,
-        userId,
-        orgId: fragment.message.project.orgId,
-        projectSandboxId: shouldForceNew ? null : sandboxId,
-        inferredSandboxId: shouldForceNew ? null : sandboxId,
-        hydrateFiles: filesToWrite,
-      });
-
-      await ensureSandboxPreviewReady(managedSandbox.sandboxId);
-      const sandbox = await Sandbox.connect(managedSandbox.sandboxId);
-      await sandbox.setTimeout(SANDBOX_TIMEOUT);
-
-      const sandboxUrl = managedSandbox.sandboxUrl;
+      const sandbox = await Sandbox.connect(sandboxId);
+      await ensureSandboxPreviewReady(sandboxId);
+      const sandboxUrl = `https://${sandbox.getHost(SANDBOX_PREVIEW_PORT)}`;
       const pickerStatus = await ensureSandboxElementPicker(sandbox);
 
-      await prisma.fragment.update({
-        where: { id: fragment.id },
-        data: { sandboxUrl },
-      });
+      const lastUpdatedAt = fragment.message.project.sandboxUpdatedAt;
+      const shouldExtend =
+        !lastUpdatedAt ||
+        Date.now() - lastUpdatedAt.getTime() >= EXTEND_COOLDOWN_MS;
 
-      await touchProjectSandbox({
-        projectId: fragment.message.project.id,
-        sandboxId: managedSandbox.sandboxId,
-        sandboxUrl,
-      });
+      if (shouldExtend) {
+        await sandbox.setTimeout(SANDBOX_TIMEOUT);
+        await recordSandboxUsage({
+          projectId: fragment.message.project.id,
+          userId,
+          orgId: fragment.message.project.orgId,
+          lastUpdatedAt: fragment.message.project.sandboxUpdatedAt,
+        });
+        await touchProjectSandbox({
+          projectId: fragment.message.project.id,
+          sandboxId,
+          sandboxUrl,
+        });
+      }
 
-      await recordSandboxUsage({
-        projectId: fragment.message.project.id,
-        userId,
-        orgId: fragment.message.project.orgId,
-        lastUpdatedAt: fragment.message.project.sandboxUpdatedAt,
-      });
+      if (sandboxUrl !== fragment.sandboxUrl) {
+        await prisma.fragment.update({
+          where: { id: fragment.id },
+          data: { sandboxUrl },
+        });
+      }
 
       return NextResponse.json({
         ok: true,
         sandboxUrl,
         pickerReload: pickerStatus.updated,
       });
-    } catch (fallbackError) {
-      console.error("[sandbox] heartbeat fallback failed", {
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error";
+      shouldForceNew = isSandboxNotFound(error);
+      console.error("[sandbox] heartbeat failed", {
         userId,
         fragmentId,
-        error: fallbackError instanceof Error ? fallbackError.message : "Unknown error",
+        error: errorMessage,
+        forceNew: shouldForceNew,
       });
-      return NextResponse.json(
-        {
-          error:
-            fallbackError instanceof Error
-              ? fallbackError.message
-              : "Heartbeat failed",
-        },
-        { status: 502 },
-      );
+      if (shouldForceNew) {
+        try {
+          await prisma.project.update({
+            where: { id: fragment.message.project.id },
+            data: { sandboxId: null, sandboxUpdatedAt: null },
+          });
+          await prisma.sandboxInstance.updateMany({
+            where: { sandboxId },
+            data: { state: SandboxState.TERMINATED, terminatedAt: new Date() },
+          });
+          await prisma.fragment.update({
+            where: { id: fragment.id },
+            data: { sandboxUrl: "" },
+          });
+        } catch (cleanupError) {
+          console.warn("[sandbox] cleanup failed", cleanupError);
+        }
+      }
     }
   }
 
-  return NextResponse.json({ ok: true });
+  // Recovery path: reached when sandboxId is null/missing OR primary connect failed
+  try {
+    const projectFragments = await prisma.fragment.findMany({
+      where: {
+        message: {
+          projectId: fragment.message.project.id,
+        },
+      },
+      select: {
+        files: true,
+        createdAt: true,
+      },
+      orderBy: {
+        createdAt: "asc",
+      },
+    });
+
+    const filesToWrite: Record<string, string> = {};
+    for (const projectFragment of projectFragments) {
+      const files = projectFragment.files;
+      if (!files || typeof files !== "object") continue;
+      for (const [path, content] of Object.entries(files)) {
+        if (typeof content === "string") {
+          filesToWrite[path] = content;
+        }
+      }
+    }
+
+    const managedSandbox = await ensureProjectSandbox({
+      projectId: fragment.message.project.id,
+      userId,
+      orgId: fragment.message.project.orgId,
+      projectSandboxId: shouldForceNew ? null : sandboxId,
+      inferredSandboxId: shouldForceNew ? null : sandboxId,
+      hydrateFiles: filesToWrite,
+    });
+
+    await ensureSandboxPreviewReady(managedSandbox.sandboxId);
+    const sandbox = await Sandbox.connect(managedSandbox.sandboxId);
+    await sandbox.setTimeout(SANDBOX_TIMEOUT);
+
+    const sandboxUrl = managedSandbox.sandboxUrl;
+    const pickerStatus = await ensureSandboxElementPicker(sandbox);
+
+    await prisma.fragment.update({
+      where: { id: fragment.id },
+      data: { sandboxUrl },
+    });
+
+    await touchProjectSandbox({
+      projectId: fragment.message.project.id,
+      sandboxId: managedSandbox.sandboxId,
+      sandboxUrl,
+    });
+
+    await recordSandboxUsage({
+      projectId: fragment.message.project.id,
+      userId,
+      orgId: fragment.message.project.orgId,
+      lastUpdatedAt: fragment.message.project.sandboxUpdatedAt,
+    });
+
+    return NextResponse.json({
+      ok: true,
+      sandboxUrl,
+      pickerReload: pickerStatus.updated,
+    });
+  } catch (fallbackError) {
+    console.error("[sandbox] heartbeat fallback failed", {
+      userId,
+      fragmentId,
+      error: fallbackError instanceof Error ? fallbackError.message : "Unknown error",
+    });
+    return NextResponse.json(
+      {
+        error:
+          fallbackError instanceof Error
+            ? fallbackError.message
+            : "Heartbeat failed",
+      },
+      { status: 502 },
+    );
+  }
 }

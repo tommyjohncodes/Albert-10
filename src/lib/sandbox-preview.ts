@@ -25,10 +25,12 @@ if [ -f package.json ] && [ ! -f "$STAMP" ]; then
   touch "$STAMP"
 fi
 
-# Ensure tw-animate-css is present (required by globals.css from shadcn init)
-if [ ! -d node_modules/tw-animate-css ]; then
-  npm install tw-animate-css --no-fund --no-audit >> /var/tmp/next-preview.log 2>&1 || true
-fi
+# Ensure shadcn runtime dependencies are present
+for pkg in tw-animate-css tailwind-merge clsx; do
+  if [ ! -d "node_modules/$pkg" ]; then
+    npm install "$pkg" --no-fund --no-audit >> /var/tmp/next-preview.log 2>&1 || true
+  fi
+done
 
 # Ensure lib/utils.ts exists (required by all shadcn components)
 # Handles projects with or without a src/ directory

@@ -15,8 +15,8 @@ RUN npx --yes create-next-app@15.3.3 . --yes --no-src-dir --typescript --tailwin
 RUN npx --yes shadcn@2.6.3 init --yes -b neutral --force
 RUN npx --yes shadcn@2.6.3 add --all --yes
 
-# tw-animate-css is referenced by globals.css after shadcn init but not auto-installed
-RUN npm install --save-dev tw-animate-css
+# Ensure shadcn runtime dependencies are installed (shadcn init may skip them with Tailwind v4)
+RUN npm install --save tailwind-merge clsx && npm install --save-dev tw-animate-css
 
 # Move the Nextjs app to the home directory and remove the nextjs-app directory
 RUN mv /home/user/nextjs-app/* /home/user/ && rm -rf /home/user/nextjs-app

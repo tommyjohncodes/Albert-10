@@ -594,6 +594,7 @@ export const codeAgentFunction = inngest.createFunction(
         },
         select: {
           sandboxUrl: true,
+          files: true,
         },
       });
 
@@ -605,6 +606,11 @@ export const codeAgentFunction = inngest.createFunction(
         inferredSandboxId: extractSandboxIdFromUrl(
           latestFragment?.sandboxUrl ?? null,
         ),
+        hydrateFiles:
+          latestFragment?.files &&
+          typeof latestFragment.files === "object"
+            ? (latestFragment.files as Record<string, string>)
+            : undefined,
       });
 
       await recordSandboxUsage({

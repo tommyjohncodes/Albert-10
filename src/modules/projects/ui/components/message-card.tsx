@@ -35,8 +35,8 @@ const FragmentCard = ({
     <button
       className={cn(
         "flex items-center text-start gap-2 border rounded-md w-fit px-3 h-8 transition-colors",
-        "bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700",
-        isActiveFragment && "ring-1 ring-emerald-500",
+        "bg-[#008000] text-white border-[#008000] hover:bg-[#006600]",
+        isActiveFragment && "ring-1 ring-[#00a000]",
       )}
       onClick={() => onFragmentClick(fragment)}
     >

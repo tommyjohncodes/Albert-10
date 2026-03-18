@@ -14,9 +14,12 @@ const checkPreviewCommand =
 const RESTART_SCRIPT = `#!/bin/bash
 cd /home/user
 
-# Kill any existing Next.js dev server
-pkill -f "next dev" 2>/dev/null || true
-sleep 1
+# If Next.js is already running, skip the restart — it may be compiling new files.
+# Only start it if it crashed or has never been started.
+if pgrep -f "next dev" > /dev/null 2>&1; then
+  echo "Next.js is already running, skipping restart" >&2
+  exit 0
+fi
 
 # Install dependencies if node_modules stamp is missing
 STAMP="node_modules/.albert-deps-stamp"

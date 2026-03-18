@@ -5,7 +5,7 @@ export const SANDBOX_PREVIEW_PORT = 3000;
 const PREVIEW_URL = `http://127.0.0.1:${SANDBOX_PREVIEW_PORT}/`;
 const PREVIEW_CHECK_TIMEOUT_MS = 10_000;
 const PREVIEW_BOOT_TIMEOUT_MS = 180_000;
-const PREVIEW_RESTART_TIMEOUT_MS = 120_000;
+const PREVIEW_RESTART_TIMEOUT_MS = 300_000;
 
 const checkPreviewCommand =
   `bash -lc 'curl -s -o /dev/null -w "%{http_code}" --max-time 5 ${PREVIEW_URL} || true'`;
@@ -22,13 +22,16 @@ const restartPreviewCommand = [
   "if [ -z \"$LOCKFILE\" ] && [ -f pnpm-lock.yaml ]; then LOCKFILE='pnpm-lock.yaml'; fi",
   "if [ -z \"$LOCKFILE\" ] && [ -f yarn.lock ]; then LOCKFILE='yarn.lock'; fi",
   "STAMP='node_modules/.albert-deps-stamp'",
+  "if [ -d node_modules ] && [ ! -f \"$STAMP\" ]; then date +%s > \"$STAMP\"; fi",
   "if [ -f package.json ]; then",
   "  NEED_INSTALL=0",
-  "  if [ ! -f \"$STAMP\" ]; then NEED_INSTALL=1; fi",
-  "  if [ -n \"$LOCKFILE\" ] && [ -f \"$LOCKFILE\" ] && [ \"$LOCKFILE\" -nt \"$STAMP\" ]; then NEED_INSTALL=1; fi",
+  "  if [ ! -d node_modules ]; then NEED_INSTALL=1; fi",
+  "  if [ -n \"$LOCKFILE\" ] && [ -f \"$LOCKFILE\" ] && [ -f \"$STAMP\" ] && [ \"$LOCKFILE\" -nt \"$STAMP\" ]; then NEED_INSTALL=1; fi",
   "  if [ \"$NEED_INSTALL\" = \"1\" ]; then npm install --no-fund --no-audit; date +%s > \"$STAMP\"; fi",
   "fi",
-  "nohup bash -lc 'cd /home/user && NEXT_TELEMETRY_DISABLED=1 npx next dev --turbopack --hostname 0.0.0.0 --port 3000' >/var/tmp/next-preview.log 2>&1 &",
+  "NEXT_BIN='./node_modules/.bin/next'",
+  "if [ ! -x \"$NEXT_BIN\" ]; then NEXT_BIN='npx next'; fi",
+  "nohup bash -lc \"cd /home/user && NEXT_TELEMETRY_DISABLED=1 $NEXT_BIN dev --turbopack --hostname 0.0.0.0 --port 3000\" >/var/tmp/next-preview.log 2>&1 &",
 ].join("\n");
 
 const waitForPreviewCommand = [

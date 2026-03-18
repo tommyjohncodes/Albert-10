@@ -51,10 +51,41 @@ async function isPreviewReady(sandbox: Sandbox) {
   }
 }
 
-async function restartPreviewServer(sandbox: Sandbox) {
-  await sandbox.commands.run(restartPreviewCommand, {
-    timeoutMs: PREVIEW_CHECK_TIMEOUT_MS,
-  });
+const formatCommandError = (error: unknown) => {
+  if (!error || typeof error !== "object") return null;
+  const err = error as { stdout?: string; stderr?: string; message?: string };
+  const parts: string[] = [];
+  if (typeof err.message === "string") {
+    parts.push(err.message.trim());
+  }
+  if (typeof err.stdout === "string" && err.stdout.trim()) {
+    parts.push(`stdout:\n${err.stdout.trim()}`);
+  }
+  if (typeof err.stderr === "string" && err.stderr.trim()) {
+    parts.push(`stderr:\n${err.stderr.trim()}`);
+  }
+  return parts.length > 0 ? parts.join("\n") : null;
+};
+
+async function restartPreviewServer(sandbox: Sandbox, sandboxId: string) {
+  try {
+    await sandbox.commands.run(restartPreviewCommand, {
+      timeoutMs: PREVIEW_CHECK_TIMEOUT_MS,
+    });
+  } catch (error) {
+    const previewLog = await readPreviewLog(sandbox);
+    const commandError = formatCommandError(error);
+    const messageParts = [
+      `Preview boot command failed for sandbox ${sandboxId}.`,
+    ];
+    if (commandError) {
+      messageParts.push(commandError);
+    }
+    if (previewLog) {
+      messageParts.push(`Recent log output:\n${previewLog}`);
+    }
+    throw new Error(messageParts.join("\n"), { cause: error });
+  }
 }
 
 async function readPreviewLog(sandbox: Sandbox) {
@@ -77,7 +108,7 @@ export async function ensureSandboxPreviewReady(sandboxId: string) {
     return PREVIEW_URL;
   }
 
-  await restartPreviewServer(sandbox);
+  await restartPreviewServer(sandbox, sandboxId);
 
   try {
     await sandbox.commands.run(waitForPreviewCommand, {

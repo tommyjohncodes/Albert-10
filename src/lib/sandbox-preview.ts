@@ -6,6 +6,7 @@ const PREVIEW_URL = `http://127.0.0.1:${SANDBOX_PREVIEW_PORT}/`;
 const PREVIEW_CHECK_TIMEOUT_MS = 10_000;
 const PREVIEW_BOOT_TIMEOUT_MS = 180_000;
 const PREVIEW_RESTART_TIMEOUT_MS = 300_000;
+const PREVIEW_FALLBACK_RESTART_TIMEOUT_MS = 15_000;
 
 const checkPreviewCommand =
   `bash -lc 'curl -s -o /dev/null -w "%{http_code}" --max-time 5 ${PREVIEW_URL} || true'`;
@@ -16,7 +17,7 @@ const restartPreviewCommand = [
   `if command -v ss >/dev/null 2>&1; then pid=$(ss -ltnp '( sport = :${SANDBOX_PREVIEW_PORT} )' 2>/dev/null | sed -n 's/.*pid=\\([0-9]\\+\\).*/\\1/p' | head -n 1); fi`,
   'if [ -n "$pid" ]; then kill "$pid" || true; fi',
   `if command -v lsof >/dev/null 2>&1; then pids=$(lsof -ti tcp:${SANDBOX_PREVIEW_PORT} 2>/dev/null || true); if [ -n "$pids" ]; then kill $pids || true; fi; fi`,
-  "pkill -f \"next dev\" >/dev/null 2>&1 || true",
+  `if command -v fuser >/dev/null 2>&1; then fuser -k ${SANDBOX_PREVIEW_PORT}/tcp >/dev/null 2>&1 || true; fi`,
   "NEXT_BIN='./node_modules/.bin/next'",
   "if [ ! -x \"$NEXT_BIN\" ]; then NEXT_BIN='npx next'; fi",
   "nohup bash -lc \"cd /home/user && NEXT_TELEMETRY_DISABLED=1 $NEXT_BIN dev --turbopack --hostname 0.0.0.0 --port 3000\" >/var/tmp/next-preview.log 2>&1 &",
@@ -100,7 +101,30 @@ export async function ensureSandboxPreviewReady(sandboxId: string) {
     return PREVIEW_URL;
   }
 
-  await restartPreviewServer(sandbox, sandboxId);
+  try {
+    await restartPreviewServer(sandbox, sandboxId);
+  } catch (error) {
+    const stdout = await readPreviewLog(sandbox);
+    const messageParts = [
+      `Preview boot command failed for sandbox ${sandboxId}.`,
+    ];
+    if (stdout) {
+      messageParts.push(`Recent log output:\n${stdout}`);
+    }
+    const fallbackCommand = [
+      "set -e",
+      "cd /home/user",
+      `if command -v fuser >/dev/null 2>&1; then fuser -k ${SANDBOX_PREVIEW_PORT}/tcp >/dev/null 2>&1 || true; fi`,
+      "nohup bash -lc \"cd /home/user && NEXT_TELEMETRY_DISABLED=1 npx next dev --turbopack --hostname 0.0.0.0 --port 3000\" >/var/tmp/next-preview.log 2>&1 &",
+    ].join("\n");
+    try {
+      await sandbox.commands.run(fallbackCommand, {
+        timeoutMs: PREVIEW_FALLBACK_RESTART_TIMEOUT_MS,
+      });
+    } catch {
+      throw new Error(messageParts.join("\n"), { cause: error });
+    }
+  }
 
   try {
     await sandbox.commands.run(waitForPreviewCommand, {

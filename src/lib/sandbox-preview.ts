@@ -28,7 +28,7 @@ const restartPreviewCommand = [
   "  if [ \"$NEED_INSTALL\" = \"1\" ]; then npm install --no-fund --no-audit; date +%s > \"$STAMP\"; fi",
   "fi",
   "nohup bash -lc 'cd /home/user && NEXT_TELEMETRY_DISABLED=1 npx next dev --turbopack --hostname 0.0.0.0 --port 3000' >/var/tmp/next-preview.log 2>&1 &",
-].join("; ");
+].join("\n");
 
 const waitForPreviewCommand = [
   "for i in $(seq 1 90); do",

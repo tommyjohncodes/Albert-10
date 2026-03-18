@@ -1226,11 +1226,21 @@ export const codeAgentFunction = inngest.createFunction(
       });
 
       const titleStart = Date.now();
-      fragmentTitleResult = await step.run("llm-fragment-title", async () =>
-        fragmentTitleGenerator.run(result.state.data.summary),
-      );
+      fragmentTitleResult = await step.run("llm-fragment-title", async () => {
+        try {
+          return await runWithTimeout(
+            fragmentTitleGenerator.run(result.state.data.summary),
+            DEFAULT_RESPONSE_TIMEOUT_MS,
+            "Fragment title generation",
+          );
+        } catch {
+          return null;
+        }
+      });
       logLlmTiming("fragment-title", llmModels.modelNames.title, titleStart);
-      fragmentTitle = parseAgentOutput(fragmentTitleResult.output);
+      fragmentTitle = fragmentTitleResult
+        ? parseAgentOutput(fragmentTitleResult.output)
+        : null;
     }
 
     const isError =
@@ -1247,30 +1257,28 @@ export const codeAgentFunction = inngest.createFunction(
         createProgressMessage("Generating response..."),
       );
 
-      try {
-        const responseStart = Date.now();
-        const responsePromise = step.run("llm-response", async () =>
-          responseGenerator.run(result.state.data.summary),
-        );
-        responseResult =
-          responseTimeoutMs > 0
-            ? await runWithTimeout(
-                responsePromise,
-                responseTimeoutMs,
-                "Response generation",
-              )
-            : await responsePromise;
-        logLlmTiming("response", llmModels.modelNames.response, responseStart);
+      const responseStart = Date.now();
+      responseResult = await step.run("llm-response", async () => {
+        try {
+          const timeoutMs = responseTimeoutMs > 0 ? responseTimeoutMs : DEFAULT_RESPONSE_TIMEOUT_MS;
+          return await runWithTimeout(
+            responseGenerator.run(result.state.data.summary),
+            timeoutMs,
+            "Response generation",
+          );
+        } catch {
+          return null;
+        }
+      });
+      logLlmTiming("response", llmModels.modelNames.response, responseStart);
+      if (responseResult) {
         responseOutput = responseResult.output;
         responseUsage = extractUsageFromAgentResult(responseResult);
-      } catch (error) {
-        console.warn("Response generator failed or timed out", error);
+      } else {
         const fallback = resolvedSummary
           ? `Here's what I built: ${resolvedSummary}`
           : "Your task completed, but the response message could not be generated.";
-        responseOutput = [
-          { type: "text", role: "assistant", content: fallback },
-        ];
+        responseOutput = [{ type: "text", role: "assistant", content: fallback }];
       }
     }
 
@@ -1291,23 +1299,24 @@ export const codeAgentFunction = inngest.createFunction(
 
       try {
         const contextStart = Date.now();
-        const contextPromise = step.run("llm-context-summary", async () =>
-          contextSummaryGenerator.run(
-            JSON.stringify({
-              previous_summary: priorContextSummary ?? "",
-              user_request: requestValue,
-              task_summary: resolvedSummary,
-            }),
-          ),
-        );
-        contextSummaryResult =
-          contextTimeoutMs > 0
-            ? await runWithTimeout(
-                contextPromise,
-                contextTimeoutMs,
-                "Context summary generation",
-              )
-            : await contextPromise;
+        contextSummaryResult = await step.run("llm-context-summary", async () => {
+          try {
+            const timeoutMs = contextTimeoutMs > 0 ? contextTimeoutMs : DEFAULT_CONTEXT_TIMEOUT_MS;
+            return await runWithTimeout(
+              contextSummaryGenerator.run(
+                JSON.stringify({
+                  previous_summary: priorContextSummary ?? "",
+                  user_request: requestValue,
+                  task_summary: resolvedSummary,
+                }),
+              ),
+              timeoutMs,
+              "Context summary generation",
+            );
+          } catch {
+            return null;
+          }
+        });
         logLlmTiming("context-summary", llmModels.modelNames.response, contextStart);
       } catch (error) {
         console.warn("Context summary generation failed or timed out", error);

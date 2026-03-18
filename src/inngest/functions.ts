@@ -717,7 +717,9 @@ export const codeAgentFunction = inngest.createFunction(
       }
     };
 
-    await createProgressMessage("Planning your request...");
+    await step.run("initial-progress", () =>
+      createProgressMessage("Planning your request..."),
+    );
 
     const projectContext = await step.run("get-project-context", async () => {
       try {
@@ -772,8 +774,8 @@ export const codeAgentFunction = inngest.createFunction(
             await createProgressMessage(`Blocked command: ${extractCommandName(command)}`);
             return "Command blocked by policy. Do not run dev/build/start commands.";
           }
-          await createProgressMessage(`Ran command: ${extractCommandName(command)}`);
           return await step?.run("terminal", async () => {
+            await createProgressMessage(`Ran command: ${extractCommandName(command)}`);
             const buffers = { stdout: "", stderr: "" };
 
             try {
@@ -816,16 +818,15 @@ export const codeAgentFunction = inngest.createFunction(
           { files },
           { step, network }: Tool.Options<AgentState>
         ) => {
-          if (files.length > 0) {
-            const fileList = files.map((file) => file.path).join(", ");
-            await createProgressMessage(
-              files.length === 1
-                ? `Updated file: ${fileList}`
-                : `Updated files: ${fileList}`,
-            );
-          }
-
           const newFiles = await step?.run("createOrUpdateFiles", async () => {
+            if (files.length > 0) {
+              const fileList = files.map((file) => file.path).join(", ");
+              await createProgressMessage(
+                files.length === 1
+                  ? `Updated file: ${fileList}`
+                  : `Updated files: ${fileList}`,
+              );
+            }
             try {
               const updatedFiles = network.state.data.files || {};
               const sandbox = await getSandbox(sandboxId, SANDBOX_RUN_TIMEOUT);
@@ -865,8 +866,8 @@ export const codeAgentFunction = inngest.createFunction(
             1,
             500,
           );
-          await createProgressMessage(`Listing files in ${safeRoot}`);
           return await step?.run("listFiles", async () => {
+            await createProgressMessage(`Listing files in ${safeRoot}`);
             try {
               const sandbox = await getSandbox(sandboxId, SANDBOX_RUN_TIMEOUT);
               const command = `bash -lc 'cd /home/user && find ${safeRoot} -maxdepth ${depth} -type f 2>/dev/null | sed \"s|^./||\" | head -n ${maxItems}'`;
@@ -885,16 +886,16 @@ export const codeAgentFunction = inngest.createFunction(
           files: z.array(z.string()),
         }),
         handler: async ({ files }, { step }) => {
-          if (files.length > 0) {
-            const preview = files.slice(0, 3).join(", ");
-            const suffix = files.length > 3 ? ` and ${files.length - 3} more` : "";
-            await createProgressMessage(
-              files.length === 1
-                ? `Opened file: ${preview}`
-                : `Opened files: ${preview}${suffix}`,
-            );
-          }
           return await step?.run("readFiles", async () => {
+            if (files.length > 0) {
+              const preview = files.slice(0, 3).join(", ");
+              const suffix = files.length > 3 ? ` and ${files.length - 3} more` : "";
+              await createProgressMessage(
+                files.length === 1
+                  ? `Opened file: ${preview}`
+                  : `Opened files: ${preview}${suffix}`,
+              );
+            }
             try {
               const sandbox = await getSandbox(sandboxId, SANDBOX_RUN_TIMEOUT);
               const contents = [];
@@ -921,8 +922,8 @@ export const codeAgentFunction = inngest.createFunction(
           endLine: z.number().int().min(1),
         }),
         handler: async ({ path, startLine, endLine }, { step }) => {
-          await createProgressMessage(`Opened snippet: ${path} (${startLine}-${endLine})`);
           return await step?.run("readFileSnippet", async () => {
+            await createProgressMessage(`Opened snippet: ${path} (${startLine}-${endLine})`);
             try {
               const sandbox = await getSandbox(sandboxId, SANDBOX_RUN_TIMEOUT);
               const content = await sandbox.files.read(path);
@@ -949,8 +950,8 @@ export const codeAgentFunction = inngest.createFunction(
         parameters: z.object({
           content: z.string().min(1),
         }),
-        handler: async ({ content }) => {
-          await createProgressMessage(content);
+        handler: async ({ content }, { step }) => {
+          await step?.run("progress", () => createProgressMessage(content));
           return "ok";
         },
       }),
@@ -1078,8 +1079,8 @@ export const codeAgentFunction = inngest.createFunction(
       )) as unknown as CodeRunResult;
     } catch (error) {
       if (isTimeoutError(error) && llmModels.codeFallback) {
-        await createProgressMessage(
-          "Primary model is slow. Switching to fallback model...",
+        await step.run("switching-model-progress", () =>
+          createProgressMessage("Primary model is slow. Switching to fallback model..."),
         );
         try {
           runResult = (await runWithAgent(

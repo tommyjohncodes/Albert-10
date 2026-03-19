@@ -76,14 +76,14 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }
 
-  const latestFragment = await prisma.fragment.findFirst({
+  const allFragments = await prisma.fragment.findMany({
     where: {
       message: {
         projectId,
       },
     },
     orderBy: {
-      createdAt: "desc",
+      createdAt: "asc",
     },
     select: {
       id: true,
@@ -92,8 +92,25 @@ export async function POST(req: Request) {
     },
   });
 
-  if (!latestFragment) {
+  if (allFragments.length === 0) {
     return NextResponse.json({ ok: false, reason: "no_fragment" });
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+  const latestFragment = allFragments[allFragments.length - 1]!;
+
+  // Merge all fragments' files in chronological order so the sandbox always
+  // contains the complete cumulative state across all runs.
+  const filesToWrite: Record<string, string> = {};
+  for (const fragment of allFragments) {
+    const files = fragment.files;
+    if (files && typeof files === "object") {
+      for (const [path, content] of Object.entries(files)) {
+        if (typeof content === "string") {
+          filesToWrite[path] = content;
+        }
+      }
+    }
   }
 
   try {
@@ -103,9 +120,7 @@ export async function POST(req: Request) {
       orgId: project.orgId,
       projectSandboxId: project.sandboxId ?? null,
       inferredSandboxId: extractSandboxId(latestFragment.sandboxUrl),
-      hydrateFiles: typeof latestFragment.files === "object"
-        ? (latestFragment.files as Record<string, string>)
-        : undefined,
+      hydrateFiles: Object.keys(filesToWrite).length > 0 ? filesToWrite : undefined,
     });
 
     await ensureSandboxPreviewReady(managedSandbox.sandboxId);

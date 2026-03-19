@@ -583,20 +583,39 @@ export const codeAgentFunction = inngest.createFunction(
 
     logAgent("resolving sandbox");
     const sandboxResult = await step.run("get-sandbox-id", async () => {
-      const latestFragment = await prisma.fragment.findFirst({
+      // Fetch all fragments in chronological order to build cumulative file state.
+      const allFragments = await prisma.fragment.findMany({
         where: {
           message: {
             projectId: event.data.projectId,
           },
         },
         orderBy: {
-          createdAt: "desc",
+          createdAt: "asc",
         },
         select: {
           sandboxUrl: true,
           files: true,
         },
       });
+
+      const latestFragment = allFragments.length > 0
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        ? allFragments[allFragments.length - 1]!
+        : null;
+
+      // Merge all fragments' files in chronological order (later runs override earlier ones).
+      const cumulativeFiles: Record<string, string> = {};
+      for (const fragment of allFragments) {
+        const files = fragment.files;
+        if (files && typeof files === "object") {
+          for (const [path, content] of Object.entries(files)) {
+            if (typeof content === "string") {
+              cumulativeFiles[path] = content;
+            }
+          }
+        }
+      }
 
       const managedSandbox = await ensureProjectSandbox({
         projectId: event.data.projectId,
@@ -606,11 +625,9 @@ export const codeAgentFunction = inngest.createFunction(
         inferredSandboxId: extractSandboxIdFromUrl(
           latestFragment?.sandboxUrl ?? null,
         ),
-        hydrateFiles:
-          latestFragment?.files &&
-          typeof latestFragment.files === "object"
-            ? (latestFragment.files as Record<string, string>)
-            : undefined,
+        hydrateFiles: Object.keys(cumulativeFiles).length > 0
+          ? cumulativeFiles
+          : undefined,
       });
 
       await recordSandboxUsage({
@@ -622,7 +639,10 @@ export const codeAgentFunction = inngest.createFunction(
           : null,
       });
 
-      return { sandboxId: managedSandbox.sandboxId };
+      return {
+        sandboxId: managedSandbox.sandboxId,
+        cumulativeFiles,
+      };
     });
     logAgent("sandbox resolved", sandboxResult ?? undefined);
 
@@ -755,7 +775,9 @@ export const codeAgentFunction = inngest.createFunction(
       createState<AgentState>(
         {
           summary: "",
-          files: {},
+          // Pre-populate with cumulative files from all prior runs so the agent
+          // can build on them and the saved fragment contains the complete state.
+          files: sandboxResult?.cumulativeFiles ?? {},
           userId: resolvedUserId,
         },
         {

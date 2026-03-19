@@ -153,7 +153,16 @@ const buildModel = (
   return openAiModel;
 };
 
-export async function getLlmModels(orgId?: string | null) {
+// Serialisable data fetched from the DB — safe to return from an Inngest step.
+export interface LlmOrgData {
+  config: LlmConfig;
+  /** Encrypted OpenRouter API key, or null when not configured. */
+  encryptedApiKey: string | null;
+}
+
+/** Fetches LLM config + org API key from the DB. Returns only JSON-serialisable
+ *  data so the result can be memoised inside an Inngest step. */
+export async function fetchLlmOrgData(orgId?: string | null): Promise<LlmOrgData> {
   const config = await resolveLlmConfig(orgId);
   const settings = orgId
     ? await prisma.orgLlmSettings.findUnique({
@@ -161,11 +170,18 @@ export async function getLlmModels(orgId?: string | null) {
         select: { openrouterApiKey: true },
       })
     : null;
+  return { config, encryptedApiKey: settings?.openrouterApiKey ?? null };
+}
+
+/** Builds model instances from already-fetched org data. Pure computation — no
+ *  DB calls, not serialisable. Call this outside Inngest steps. */
+export function buildLlmModels(orgData: LlmOrgData) {
+  const { config } = orgData;
 
   let orgOpenRouterApiKey: string | null = null;
-  if (settings?.openrouterApiKey) {
+  if (orgData.encryptedApiKey) {
     try {
-      orgOpenRouterApiKey = decryptSecret(settings.openrouterApiKey);
+      orgOpenRouterApiKey = decryptSecret(orgData.encryptedApiKey);
     } catch {
       throw new Error(
         "Failed to decrypt org OpenRouter key. Check OPENROUTER_KEY_ENCRYPTION_KEY."
@@ -218,4 +234,10 @@ export async function getLlmModels(orgId?: string | null) {
         } as Parameters<typeof buildModel>[3])
       : null,
   };
+}
+
+/** Convenience wrapper — use only where Inngest memoisation is not needed. */
+export async function getLlmModels(orgId?: string | null) {
+  const orgData = await fetchLlmOrgData(orgId);
+  return buildLlmModels(orgData);
 }

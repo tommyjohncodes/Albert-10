@@ -4,36 +4,17 @@ import {
   createAgent,
   createTool,
   createNetwork,
-  type Agent,
-  type AgentMessageChunk,
-  AgentResult,
-  type AgentResult as AgentResultType,
   type Message,
   type Tool,
-  type ToolResultMessage,
   createState,
 } from "@inngest/agent-kit";
 
 import { prisma } from "@/lib/db";
-import { recordLlmUsage } from "@/lib/llm-usage";
-import { getLlmModels } from "@/lib/llm";
-import {
-  ensureProjectSandbox,
-  touchProjectSandbox,
-} from "@/lib/sandbox-instance";
+import { fetchLlmOrgData, buildLlmModels } from "@/lib/llm";
+import { ensureProjectSandbox, touchProjectSandbox } from "@/lib/sandbox-instance";
 import { recordSandboxUsage } from "@/lib/sandbox-usage";
 import { SANDBOX_PREVIEW_PORT } from "@/lib/sandbox-preview";
-import {
-  getPlatformSettings,
-  resolveTokenEfficiencySettings,
-} from "@/lib/platform-settings";
-import {
-  CONTEXT_SUMMARY_PROMPT,
-  FRAGMENT_TITLE_PROMPT,
-  PROMPT,
-  RESPONSE_PROMPT,
-} from "@/prompt";
-import { getAgentStreamChannel } from "@/inngest/realtime";
+import { FRAGMENT_TITLE_PROMPT, PROMPT, RESPONSE_PROMPT } from "@/prompt";
 
 import { inngest } from "./client";
 import { SANDBOX_RUN_TIMEOUT, SANDBOX_TIMEOUT } from "./types";
@@ -42,35 +23,6 @@ import { getSandbox, lastAssistantTextMessageContent, parseAgentOutput } from ".
 interface AgentState {
   summary: string;
   files: { [path: string]: string };
-  userId?: string;
-  error?: string;
-  finishReason?: string;
-  lastAssistantMessage?: string;
-  consecutiveNoToolCalls?: number;
-  toolCallCount?: number;
-};
-
-interface UsageShape {
-  promptTokens?: number;
-  completionTokens?: number;
-  totalTokens?: number;
-  costUsd?: number;
-}
-
-interface RawUsage {
-  prompt_tokens?: number;
-  completion_tokens?: number;
-  total_tokens?: number;
-  promptTokens?: number;
-  completionTokens?: number;
-  totalTokens?: number;
-  cost?: number | string;
-  total_cost?: number | string;
-  totalCost?: number | string;
-  costUsd?: number | string;
-  cost_usd?: number | string;
-  total_cost_usd?: number | string;
-  totalCostUsd?: number | string;
 }
 
 const extractSandboxIdFromUrl = (sandboxUrl?: string | null) => {
@@ -88,456 +40,14 @@ const extractSandboxIdFromUrl = (sandboxUrl?: string | null) => {
   }
 };
 
-const normalizeUsage = (usage?: RawUsage | null): UsageShape => {
-  if (!usage) {
-    return {};
-  }
-
-  const promptTokens = usage.promptTokens ?? usage.prompt_tokens ?? 0;
-  const completionTokens = usage.completionTokens ?? usage.completion_tokens ?? 0;
-  const totalTokens =
-    usage.totalTokens ?? usage.total_tokens ?? promptTokens + completionTokens;
-  const rawCost =
-    usage.costUsd ??
-    usage.cost_usd ??
-    usage.total_cost_usd ??
-    usage.totalCostUsd ??
-    usage.cost ??
-    usage.total_cost ??
-    usage.totalCost ??
-    0;
-  const costUsd =
-    typeof rawCost === "number"
-      ? rawCost
-      : typeof rawCost === "string"
-        ? Number(rawCost)
-        : 0;
-
-  return {
-    promptTokens,
-    completionTokens,
-    totalTokens,
-    costUsd: Number.isFinite(costUsd) ? costUsd : 0,
-  };
-};
-
-const MAX_CONTEXT_SUMMARY_LENGTH = 1200;
-const MAX_TOOL_OUTPUT_CHARS = 12000;
-const MAX_READ_FILE_CHARS = 12000;
-const MAX_READ_SNIPPET_CHARS = 8000;
-const MAX_AGENT_HISTORY_RESULTS = 6;
-const DEFAULT_AGENT_TIMEOUT_MS = 300_000;
-const DEFAULT_RESPONSE_TIMEOUT_MS = 45_000;
-const DEFAULT_CONTEXT_TIMEOUT_MS = 20_000;
-const DEFAULT_PRIMARY_MODEL_TIMEOUT_MS = 120_000;
-const TERMINAL_COMMAND_TIMEOUT_MS = 120_000;
-const BLOCKED_COMMAND_PATTERNS = [
-  /\bnpm\s+run\s+(dev|start|build)\b/i,
-  /\bnext\s+(dev|start|build)\b/i,
-];
-
-const truncateText = (value: string, maxChars: number) => {
-  if (value.length <= maxChars) {
-    return value;
-  }
-  const truncated = value.slice(0, maxChars);
-  return `${truncated}\n\n[TRUNCATED ${value.length - maxChars} chars]`;
-};
-
-const clampNumber = (value: number, min: number, max: number) =>
-  Math.min(Math.max(value, min), max);
-
-const sanitizeRelativePath = (value?: string) => {
-  if (!value) {
-    return ".";
-  }
-  const trimmed = value.trim();
-  if (!trimmed || trimmed.startsWith("/") || trimmed.includes("..")) {
-    return ".";
-  }
-  if (!/^[\w./-]+$/.test(trimmed)) {
-    return ".";
-  }
-  return trimmed;
-};
-
-type SerializedAgentResult = {
-  agentName: string;
-  output: Message[];
-  toolCalls: unknown[];
-  createdAt: string | Date;
-  checksum?: string;
-};
-
-const deserializeAgentResults = (
-  value: unknown,
-  limit: number = MAX_AGENT_HISTORY_RESULTS,
-): AgentResult[] => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value
-    .map((item) => {
-      if (!item || typeof item !== "object") {
-        return null;
-      }
-      const record = item as SerializedAgentResult;
-      if (!record.agentName || !Array.isArray(record.output) || !Array.isArray(record.toolCalls)) {
-        return null;
-      }
-      const createdAt = record.createdAt ? new Date(record.createdAt) : new Date();
-      return new AgentResult(
-        record.agentName,
-        record.output,
-        record.toolCalls as ToolResultMessage[],
-        createdAt,
-      );
-    })
-    .filter((item): item is AgentResult => Boolean(item))
-    .slice(-limit);
-};
-
-const serializeAgentResults = (
-  results: AgentResultType[],
-  limit: number = MAX_AGENT_HISTORY_RESULTS,
-) => {
-  return results
-    .slice(-limit)
-    .map((item) => {
-      if (!item || typeof (item as AgentResult).export !== "function") {
-        return null;
-      }
-      const exported = (item as AgentResult).export();
-      return {
-        ...exported,
-        createdAt: exported.createdAt instanceof Date ? exported.createdAt.toISOString() : exported.createdAt,
-      };
-    })
-    .filter(Boolean);
-};
-
-const parseTimeoutMs = (value: string | number | undefined | null, fallback: number) => {
-  if (value === undefined || value === null || value === "") {
-    return fallback;
-  }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-  const parsed = Number.parseInt(String(value), 10);
-  if (Number.isFinite(parsed) && parsed >= 0) {
-    return parsed;
-  }
-  return fallback;
-};
-
-const runWithTimeout = async <T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  label: string,
-): Promise<T> => {
-  let timeoutId: NodeJS.Timeout | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => {
-      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-  });
-
-  try {
-    return await Promise.race([promise, timeoutPromise]);
-  } finally {
-    if (timeoutId) {
-      clearTimeout(timeoutId);
-    }
-  }
-};
-
-const parseUsageFromRaw = (raw: unknown): UsageShape => {
-  if (!raw) {
-    return {};
-  }
-
-  let value: unknown = raw;
-  if (typeof raw === "string") {
-    try {
-      value = JSON.parse(raw);
-    } catch {
-      return {};
-    }
-  }
-
-  if (!value || typeof value !== "object") {
-    return {};
-  }
-
-  const usage =
-    (value as { usage?: RawUsage }).usage ??
-    (value as { data?: { usage?: RawUsage } }).data?.usage ??
-    (value as { response?: { usage?: RawUsage } }).response?.usage;
-
-  if (!usage || typeof usage !== "object") {
-    return {};
-  }
-
-  return normalizeUsage(usage);
-};
-
-type FailureContext = {
-  errorType: string;
-  errorMessage?: string | null;
-  finishReason?: string | null;
-  summaryFound: boolean;
-  filesCount: number;
-};
-
-const buildFailureReason = ({
-  errorType,
-  finishReason,
-}: FailureContext): string | null => {
-  if (finishReason === "length") {
-    return "The model hit its output limit before finishing.";
-  }
-  if (finishReason === "content_filter") {
-    return "The response was blocked by the safety filter.";
-  }
-  if (errorType === "missing_summary") {
-    return "The agent did not produce the final task summary.";
-  }
-  if (errorType === "no_files") {
-    return "No files were created or updated.";
-  }
-  if (errorType === "sandbox_limit_reached") {
-    return "The sandbox concurrency limit was reached.";
-  }
-  if (errorType === "tool_call_parse_failed") {
-    return "The model returned malformed tool arguments.";
-  }
-  if (errorType === "agent_timeout") {
-    return "The agent took too long to respond.";
-  }
-  if (errorType === "agent_error") {
-    return "The agent reported an error during execution.";
-  }
-  return "An unknown error occurred.";
-};
-
-const buildFailureGuidance = ({
-  errorType,
-  finishReason,
-}: FailureContext): string | null => {
-  if (finishReason === "length") {
-    return "Try a shorter request or split the task into smaller steps.";
-  }
-  if (finishReason === "content_filter") {
-    return "Rephrase the request to avoid restricted content.";
-  }
-  if (errorType === "missing_summary") {
-    return "Retry the request, and consider shortening it if it keeps failing.";
-  }
-  if (errorType === "no_files") {
-    return "Be more specific about what you want built, then try again.";
-  }
-  if (errorType === "sandbox_limit_reached") {
-    return "Close another project or wait a minute, then retry.";
-  }
-  if (errorType === "tool_call_parse_failed") {
-    return "Try again or switch models.";
-  }
-  if (errorType === "agent_timeout") {
-    return "Try again or simplify the request.";
-  }
-  if (errorType === "agent_error") {
-    return "Try again, or simplify the request.";
-  }
-  return "Try again or simplify the request.";
-};
-
-const buildUserFailureMessage = (context: FailureContext): string => {
-  const base =
-    context.errorMessage ??
-    (context.errorType === "missing_summary"
-      ? "The agent didn't finish the response."
-      : context.errorType === "no_files"
-        ? "The agent didn't produce any files."
-        : "Something went wrong. Please try again.");
-  const reason = buildFailureReason(context);
-  const guidance = buildFailureGuidance(context);
-
-  let message = base;
-  if (reason) {
-    message += `\n\nReason: ${reason}`;
-  }
-  if (guidance) {
-    message += `\nTry: ${guidance}`;
-  }
-
-  return message;
-};
-
-const recordAgentFailure = async (data: {
-  projectId: string;
-  sandboxId?: string | null;
-  errorType: string;
-  errorMessage?: string | null;
-  finishReason?: string | null;
-  lastAssistantMessage?: string | null;
-  summaryFound: boolean;
-  filesCount: number;
-}) => {
-  try {
-    const client = (prisma as unknown as {
-      agentFailure?: { create: (args: { data: unknown }) => Promise<unknown> };
-    }).agentFailure;
-    if (!client?.create) return;
-    await client.create({ data });
-  } catch (error) {
-    console.warn("Failed to record agent failure", error);
-  }
-};
-
-const mergeUsage = (items: UsageShape[]): UsageShape => {
-  const totals: UsageShape = {
-    promptTokens: 0,
-    completionTokens: 0,
-    totalTokens: 0,
-    costUsd: 0,
-  };
-
-  for (const item of items) {
-    totals.promptTokens = (totals.promptTokens ?? 0) + (item.promptTokens ?? 0);
-    totals.completionTokens =
-      (totals.completionTokens ?? 0) + (item.completionTokens ?? 0);
-    totals.totalTokens = (totals.totalTokens ?? 0) + (item.totalTokens ?? 0);
-    totals.costUsd = (totals.costUsd ?? 0) + (item.costUsd ?? 0);
-  }
-
-  return totals;
-};
-
-const extractUsageFromAgentResult = (result?: { raw?: unknown } | null) =>
-  parseUsageFromRaw(result?.raw);
-
-const extractUsageFromNetwork = (
-  network?: { state?: { results?: Array<{ raw?: unknown }> } } | null,
-) =>
-  mergeUsage(
-    (network?.state?.results ?? []).map((result) =>
-      extractUsageFromAgentResult(result),
-    ),
-  );
-
-const parseRawObject = (raw: unknown) => {
-  if (!raw) return null;
-  if (typeof raw === "string") {
-    try {
-      return JSON.parse(raw) as unknown;
-    } catch {
-      return null;
-    }
-  }
-  if (typeof raw === "object") {
-    return raw as object;
-  }
-  return null;
-};
-
-const extractFinishReasonFromRaw = (raw: unknown) => {
-  const value = parseRawObject(raw) as
-    | {
-        choices?: Array<{ finish_reason?: string; finishReason?: string }>;
-        data?: { choices?: Array<{ finish_reason?: string; finishReason?: string }> };
-        response?: { choices?: Array<{ finish_reason?: string; finishReason?: string }> };
-      }
-    | null;
-
-  if (!value) return null;
-
-  const choices =
-    value.choices ??
-    value.data?.choices ??
-    value.response?.choices;
-
-  const finishReason = choices?.[0]?.finish_reason ?? choices?.[0]?.finishReason;
-  return typeof finishReason === "string" ? finishReason : null;
-};
-
-const normalizeTaskSummary = (value: string) => {
-  const withoutTags = value.replace(/<\/?task_summary>/g, "");
-  return withoutTags.replace(/\s+/g, " ").trim();
-};
-
-const extractCommandName = (command: string) => {
-  const trimmed = command.trim();
-  if (!trimmed) return "command";
-  return trimmed.split(/\s+/)[0] ?? "command";
-};
-
-const isToolArgumentsParseError = (error: unknown) =>
-  error instanceof Error &&
-  error.message.includes("Failed to parse JSON with backticks");
-
-const resolveAgentErrorType = (error: unknown) => {
-  if (error instanceof Error && error.message.includes("timed out")) {
-    return "agent_timeout";
-  }
-  if (isToolArgumentsParseError(error)) {
-    return "tool_call_parse_failed";
-  }
-  return "agent_error";
-};
-
-const isTimeoutError = (error: unknown) =>
-  error instanceof Error && error.message.toLowerCase().includes("timed out");
-
-const logLlmTiming = (label: string, modelName: string | null, startedAt: number) => {
-  const durationMs = Date.now() - startedAt;
-  console.info("[LLM timing]", {
-    label,
-    modelName: modelName ?? "unknown",
-    durationMs,
-  });
-};
-
-const resolveAgentErrorMessage = (errorType: string) => {
-  if (errorType === "tool_call_parse_failed") {
-    return "The model returned malformed tool arguments. Please try again or switch models.";
-  }
-  if (errorType === "agent_timeout") {
-    return "The agent took too long to respond. Please try again or simplify the request.";
-  }
-  return "The model request failed. Please try again.";
-};
-
 export const codeAgentFunction = inngest.createFunction(
   { id: "code-agent" },
   { event: "code-agent/run" },
-  async ({ event, step, publish }) => {
-    const logAgent = (
-      message: string,
-      extra?: Record<string, unknown>,
-      level: "info" | "warn" | "error" = "info",
-    ) => {
-      const payload = {
-        eventId: event.id,
-        projectId: event.data?.projectId ?? null,
-        userId: event.data?.userId ?? null,
-        orgId: event.data?.orgId ?? null,
-        ...extra,
-      };
-      if (level === "error") {
-        console.error("[code-agent]", message, payload);
-      } else if (level === "warn") {
-        console.warn("[code-agent]", message, payload);
-      } else {
-        console.info("[code-agent]", message, payload);
-      }
-    };
-
-    logAgent("run started");
+  async ({ event, step }) => {
+    // Resolve project auth / org context
     const projectAccess = await step.run("get-project-access", async () => {
       const project = await prisma.project.findUnique({
-        where: {
-          id: event.data.projectId,
-        },
+        where: { id: event.data.projectId },
         select: {
           orgId: true,
           userId: true,
@@ -545,7 +55,6 @@ export const codeAgentFunction = inngest.createFunction(
           sandboxUpdatedAt: true,
         },
       });
-
       return {
         orgId: (event.data?.orgId as string | undefined) ?? project?.orgId ?? null,
         userId: (event.data?.userId as string | undefined) ?? project?.userId ?? null,
@@ -554,51 +63,34 @@ export const codeAgentFunction = inngest.createFunction(
       };
     });
 
-    logAgent("resolved project access", projectAccess ?? undefined);
     const orgId = projectAccess?.orgId ?? null;
     const userId = projectAccess?.userId ?? null;
-    const resolvedUserId = userId ?? event.data.userId;
 
-    if (!resolvedUserId) {
-      logAgent("missing user id", undefined, "error");
-      throw new Error("Project user ID is missing.");
-    }
+    // Fetch org LLM config inside a step so it is memoised — avoids hitting the
+    // DB on every Inngest replay and prevents "Server has closed the connection".
+    const llmOrgData = await step.run("get-llm-config", () => fetchLlmOrgData(orgId));
 
-    const requestValue =
-      typeof event.data.value === "string"
-        ? event.data.value
-        : typeof event.data.userMessage?.content === "string"
-          ? event.data.userMessage.content
-          : "";
-    const threadId =
-      typeof event.data.threadId === "string" && event.data.threadId.trim()
-        ? event.data.threadId.trim()
-        : event.data.projectId;
-    const channelKey =
-      typeof event.data.channelKey === "string" && event.data.channelKey.trim()
-        ? event.data.channelKey.trim()
-        : resolvedUserId;
-    const runInput =
-      event.data.userMessage && typeof event.data.userMessage.content === "string"
-        ? event.data.userMessage
-        : requestValue;
+    // Build model instances outside the step (non-serialisable, pure computation).
+    const llmModels = buildLlmModels(
+      llmOrgData ?? {
+        config: {
+          provider: "openai",
+          codeModel: "gpt-4.1",
+          titleModel: "gpt-4o",
+          responseModel: "gpt-4o",
+          fallbackCodeModel: "gpt-4.1",
+        },
+        encryptedApiKey: null,
+      },
+    );
 
-    logAgent("resolving sandbox");
+    // Ensure a sandbox is running for this project, reusing an existing one
+    // where possible so the agent sees the cumulative file state.
     const sandboxResult = await step.run("get-sandbox-id", async () => {
-      // Fetch all fragments in chronological order to build cumulative file state.
       const allFragments = await prisma.fragment.findMany({
-        where: {
-          message: {
-            projectId: event.data.projectId,
-          },
-        },
-        orderBy: {
-          createdAt: "asc",
-        },
-        select: {
-          sandboxUrl: true,
-          files: true,
-        },
+        where: { message: { projectId: event.data.projectId } },
+        orderBy: { createdAt: "asc" },
+        select: { sandboxUrl: true, files: true },
       });
 
       const latestFragment = allFragments.length > 0
@@ -606,822 +98,224 @@ export const codeAgentFunction = inngest.createFunction(
         ? allFragments[allFragments.length - 1]!
         : null;
 
-      // Merge all fragments' files in chronological order (later runs override earlier ones).
+      // Merge all fragment files so a fresh sandbox has the full project state.
       const cumulativeFiles: Record<string, string> = {};
       for (const fragment of allFragments) {
         const files = fragment.files;
         if (files && typeof files === "object") {
           for (const [path, content] of Object.entries(files)) {
-            if (typeof content === "string") {
-              cumulativeFiles[path] = content;
-            }
+            if (typeof content === "string") cumulativeFiles[path] = content;
           }
         }
       }
 
       const managedSandbox = await ensureProjectSandbox({
         projectId: event.data.projectId,
-        userId: resolvedUserId,
+        userId: userId ?? "",
         orgId,
         projectSandboxId: projectAccess?.sandboxId ?? null,
-        inferredSandboxId: extractSandboxIdFromUrl(
-          latestFragment?.sandboxUrl ?? null,
-        ),
-        hydrateFiles: Object.keys(cumulativeFiles).length > 0
-          ? cumulativeFiles
-          : undefined,
+        inferredSandboxId: extractSandboxIdFromUrl(latestFragment?.sandboxUrl ?? null),
+        hydrateFiles: Object.keys(cumulativeFiles).length > 0 ? cumulativeFiles : undefined,
       });
 
       await recordSandboxUsage({
         projectId: event.data.projectId,
-        userId,
+        userId: userId ?? "",
         orgId,
         lastUpdatedAt: projectAccess?.sandboxUpdatedAt
           ? new Date(projectAccess.sandboxUpdatedAt)
           : null,
       });
 
-      // Return only the sandboxId — do NOT return cumulativeFiles. Inngest
-      // serialises every step result into the replay payload, so large file
-      // contents here would bloat every subsequent round-trip to the server.
       return { sandboxId: managedSandbox.sandboxId };
     });
-    logAgent("sandbox resolved", sandboxResult ?? undefined);
 
     if (!sandboxResult?.sandboxId) {
-      logAgent("sandbox unavailable", undefined, "error");
-      const message = buildUserFailureMessage({
-        errorType: "sandbox_limit_reached",
-        errorMessage:
-          "Something went wrong while starting the sandbox. Please try again.",
-        finishReason: null,
-        summaryFound: false,
-        filesCount: 0,
-      });
-
-      await step.run("sandbox-limit-error", async () => {
-        await recordAgentFailure({
-          projectId: event.data.projectId,
-          sandboxId: projectAccess?.sandboxId ?? null,
-          errorType: "sandbox_limit_reached",
-          errorMessage:
-            "Something went wrong while starting the sandbox. Please try again.",
-          summaryFound: false,
-          filesCount: 0,
-        });
+      await step.run("sandbox-error", async () => {
         return prisma.message.create({
           data: {
             projectId: event.data.projectId,
-            content: message,
+            content: "Something went wrong while starting the sandbox. Please try again.",
             role: "ASSISTANT",
             type: "ERROR",
           },
         });
       });
-
-      return { error: "sandbox_limit_reached" };
+      return { error: "sandbox_unavailable" };
     }
 
     const sandboxId = sandboxResult.sandboxId;
-    const cooldownSandbox = async () => {
-      try {
-        await Sandbox.setTimeout(sandboxId, SANDBOX_TIMEOUT);
-      } catch (error) {
-        console.warn("Failed to reset sandbox timeout after error", error);
-      }
-    };
 
-    const platformSettings = await step.run("get-platform-settings", async () => {
-      try {
-        return await getPlatformSettings();
-      } catch (error) {
-        console.warn("Failed to load platform settings", error);
-        return null;
+    const previousMessages = await step.run("get-previous-messages", async () => {
+      const formattedMessages: Message[] = [];
+
+      const messages = await prisma.message.findMany({
+        where: { projectId: event.data.projectId },
+        orderBy: { createdAt: "desc" },
+        take: 5,
+      });
+
+      for (const message of messages) {
+        formattedMessages.push({
+          type: "text",
+          role: message.role === "ASSISTANT" ? "assistant" : "user",
+          content: message.content,
+        });
       }
+
+      return formattedMessages.reverse();
     });
 
-    const efficiencySettings = resolveTokenEfficiencySettings(
-      platformSettings as Awaited<ReturnType<typeof getPlatformSettings>> | null,
-    );
-    const tokenEfficiencyEnabled = efficiencySettings.enabled;
-    const historyLimit = tokenEfficiencyEnabled
-      ? clampNumber(efficiencySettings.agentHistoryLimit, 1, 20)
-      : MAX_AGENT_HISTORY_RESULTS;
-    const contextSummaryLimit = tokenEfficiencyEnabled
-      ? clampNumber(efficiencySettings.contextSummaryMaxChars, 300, 3000)
-      : MAX_CONTEXT_SUMMARY_LENGTH;
-    const agentTimeoutMs = tokenEfficiencyEnabled
-      ? parseTimeoutMs(efficiencySettings.agentTimeoutMs, DEFAULT_AGENT_TIMEOUT_MS)
-      : parseTimeoutMs(process.env.LLM_AGENT_TIMEOUT_MS, DEFAULT_AGENT_TIMEOUT_MS);
-    const responseTimeoutMs = tokenEfficiencyEnabled
-      ? parseTimeoutMs(efficiencySettings.responseTimeoutMs, DEFAULT_RESPONSE_TIMEOUT_MS)
-      : parseTimeoutMs(process.env.LLM_RESPONSE_TIMEOUT_MS, DEFAULT_RESPONSE_TIMEOUT_MS);
-    const contextTimeoutMs = tokenEfficiencyEnabled
-      ? parseTimeoutMs(efficiencySettings.contextTimeoutMs, DEFAULT_CONTEXT_TIMEOUT_MS)
-      : parseTimeoutMs(process.env.LLM_CONTEXT_TIMEOUT_MS, DEFAULT_CONTEXT_TIMEOUT_MS);
-    const primaryModelTimeoutMs = parseTimeoutMs(
-      process.env.LLM_CODE_PRIMARY_TIMEOUT_MS,
-      DEFAULT_PRIMARY_MODEL_TIMEOUT_MS,
+    const state = createState<AgentState>(
+      { summary: "", files: {} },
+      { messages: previousMessages ?? [] },
     );
 
-    const llmModels = await getLlmModels(orgId);
-
-    const createProgressMessage = async (content: string) => {
-      logAgent("progress", { content });
-      try {
-        await prisma.message.create({
-          data: {
-            projectId: event.data.projectId,
-            content,
-            role: "ASSISTANT",
-            type: "PROGRESS",
-          },
-        });
-      } catch (error) {
-        console.warn("Failed to record progress message", error);
-      }
-    };
-
-    await step.run("initial-progress", () =>
-      createProgressMessage("Planning your request..."),
-    );
-
-    const projectContext = await step.run("get-project-context", async () => {
-      try {
-        return await prisma.projectContext.findUnique({
-          where: { projectId: event.data.projectId },
-          select: { summary: true, results: true },
-        });
-      } catch (error) {
-        console.warn("Failed to load project context", error);
-        return null;
-      }
-    });
-
-    const priorContextSummary = projectContext?.summary
-      ? projectContext.summary.slice(0, contextSummaryLimit)
-      : null;
-
-    const priorResults = deserializeAgentResults(projectContext?.results, historyLimit);
-    const seedMessages: Message[] = priorContextSummary
-      ? [
-          {
-            type: "text",
-            role: "assistant",
-            content: `Project context summary:\n${priorContextSummary}`,
-          },
-        ]
-      : [];
-
-    const buildAgentState = () =>
-      createState<AgentState>(
-        {
-          summary: "",
-          files: {},
-          userId: resolvedUserId,
-        },
-        {
-          messages: seedMessages,
-          results: priorResults,
-          threadId,
-        },
-      );
-
-    const tools = [
-      createTool({
-        name: "terminal",
-        description: "Use the terminal to run commands",
-        parameters: z.object({
-          command: z.string(),
-        }),
-        handler: async ({ command }, { step }) => {
-          if (BLOCKED_COMMAND_PATTERNS.some((pattern) => pattern.test(command))) {
-            await createProgressMessage(`Blocked command: ${extractCommandName(command)}`);
-            return "Command blocked by policy. Do not run dev/build/start commands.";
-          }
-          return await step?.run("terminal", async () => {
-            await createProgressMessage(`Ran command: ${extractCommandName(command)}`);
-            const buffers = { stdout: "", stderr: "" };
-
-            try {
-              const sandbox = await getSandbox(sandboxId, SANDBOX_RUN_TIMEOUT);
-              const result = await runWithTimeout(
-                sandbox.commands.run(command, {
-                  onStdout: (data: string) => {
-                    buffers.stdout += data;
-                  },
-                  onStderr: (data: string) => {
-                    buffers.stderr += data;
-                  },
-                }),
-                TERMINAL_COMMAND_TIMEOUT_MS,
-                "Terminal command timed out",
-              );
-              return truncateText(result.stdout ?? "", MAX_TOOL_OUTPUT_CHARS);
-            } catch (e) {
-              console.error(
-                `Command failed: ${e} \nstdout: ${buffers.stdout}\nstderror: ${buffers.stderr}`,
-              );
-              const combined = `Command failed: ${e} \nstdout: ${buffers.stdout}\nstderr: ${buffers.stderr}`;
-              return truncateText(combined, MAX_TOOL_OUTPUT_CHARS);
-            }
-          });
-        },
-      }),
-      createTool({
-        name: "createOrUpdateFiles",
-        description: "Create or update files in the sandbox",
-        parameters: z.object({
-          files: z.array(
-            z.object({
-              path: z.string(),
-              content: z.string(),
-            }),
-          ),
-        }),
-        handler: async (
-          { files },
-          { step, network }: Tool.Options<AgentState>
-        ) => {
-          const writtenFiles = await step?.run("createOrUpdateFiles", async () => {
-            if (files.length > 0) {
-              const fileList = files.map((file) => file.path).join(", ");
-              await createProgressMessage(
-                files.length === 1
-                  ? `Updated file: ${fileList}`
-                  : `Updated files: ${fileList}`,
-              );
-            }
-            try {
-              const sandbox = await getSandbox(sandboxId, SANDBOX_RUN_TIMEOUT);
-              const newlyWritten: Record<string, string> = {};
-              for (const file of files) {
-                await sandbox.files.write(file.path, file.content);
-                newlyWritten[file.path] = file.content;
-              }
-
-              return newlyWritten;
-            } catch (e) {
-              return "Error: " + e;
-            }
-          });
-
-          if (typeof writtenFiles === "object") {
-            network.state.data.files = { ...network.state.data.files, ...writtenFiles };
-          }
-        }
-      }),
-      createTool({
-        name: "listFiles",
-        description: "List project files from the workspace",
-        parameters: z.object({
-          root: z.string(),
-          maxDepth: z.number().int().min(1).max(6),
-          limit: z.number().int().min(1).max(500),
-        }),
-        handler: async ({ root, maxDepth, limit }, { step }) => {
-          const safeRoot = sanitizeRelativePath(root);
-          const depth = clampNumber(
-            Number.isFinite(maxDepth) ? maxDepth : 4,
-            1,
-            6,
-          );
-          const maxItems = clampNumber(
-            Number.isFinite(limit) ? limit : 300,
-            1,
-            500,
-          );
-          return await step?.run("listFiles", async () => {
-            await createProgressMessage(`Listing files in ${safeRoot}`);
-            try {
-              const sandbox = await getSandbox(sandboxId, SANDBOX_RUN_TIMEOUT);
-              const command = `bash -lc 'cd /home/user && find ${safeRoot} -maxdepth ${depth} -type f 2>/dev/null | sed \"s|^./||\" | head -n ${maxItems}'`;
-              const result = await sandbox.commands.run(command);
-              return truncateText(result.stdout ?? "", MAX_TOOL_OUTPUT_CHARS);
-            } catch (e) {
-              return truncateText("Error: " + e, MAX_TOOL_OUTPUT_CHARS);
-            }
-          });
-        },
-      }),
-      createTool({
-        name: "readFiles",
-        description: "Read files from the sandbox",
-        parameters: z.object({
-          files: z.array(z.string()),
-        }),
-        handler: async ({ files }, { step }) => {
-          return await step?.run("readFiles", async () => {
-            if (files.length > 0) {
-              const preview = files.slice(0, 3).join(", ");
-              const suffix = files.length > 3 ? ` and ${files.length - 3} more` : "";
-              await createProgressMessage(
-                files.length === 1
-                  ? `Opened file: ${preview}`
-                  : `Opened files: ${preview}${suffix}`,
-              );
-            }
-            try {
-              const sandbox = await getSandbox(sandboxId, SANDBOX_RUN_TIMEOUT);
-              const contents = [];
-              for (const file of files) {
-                const content = await sandbox.files.read(file);
-                contents.push({
-                  path: file,
-                  content: truncateText(content, MAX_READ_FILE_CHARS),
+    const codeAgent = createAgent<AgentState>({
+      name: "code-agent",
+      description: "An expert coding agent",
+      system: PROMPT,
+      model: llmModels.code,
+      tools: [
+        createTool({
+          name: "terminal",
+          description: "Use the terminal to run commands",
+          parameters: z.object({
+            command: z.string(),
+          }),
+          handler: async ({ command }, { step }) => {
+            return await step?.run("terminal", async () => {
+              const buffers = { stdout: "", stderr: "" };
+              try {
+                const sandbox = await getSandbox(sandboxId, SANDBOX_RUN_TIMEOUT);
+                const result = await sandbox.commands.run(command, {
+                  onStdout: (data: string) => { buffers.stdout += data; },
+                  onStderr: (data: string) => { buffers.stderr += data; },
                 });
+                return result.stdout;
+              } catch (e) {
+                console.error(`Command failed: ${e}\nstdout: ${buffers.stdout}\nstderr: ${buffers.stderr}`);
+                return `Command failed: ${e}\nstdout: ${buffers.stdout}\nstderr: ${buffers.stderr}`;
               }
-              return truncateText(JSON.stringify(contents), MAX_TOOL_OUTPUT_CHARS);
-            } catch (e) {
-              return truncateText("Error: " + e, MAX_TOOL_OUTPUT_CHARS);
-            }
-          })
-        },
-      }),
-      createTool({
-        name: "readFileSnippet",
-        description: "Read a specific line range from a file",
-        parameters: z.object({
-          path: z.string(),
-          startLine: z.number().int().min(1),
-          endLine: z.number().int().min(1),
+            });
+          },
         }),
-        handler: async ({ path, startLine, endLine }, { step }) => {
-          return await step?.run("readFileSnippet", async () => {
-            await createProgressMessage(`Opened snippet: ${path} (${startLine}-${endLine})`);
-            try {
-              const sandbox = await getSandbox(sandboxId, SANDBOX_RUN_TIMEOUT);
-              const content = await sandbox.files.read(path);
-              const lines = content.split(/\r?\n/);
-              const safeStart = clampNumber(startLine, 1, lines.length);
-              const safeEnd = clampNumber(endLine, safeStart, lines.length);
-              const snippet = lines.slice(safeStart - 1, safeEnd).join("\n");
-              const payload = {
-                path,
-                startLine: safeStart,
-                endLine: safeEnd,
-                content: truncateText(snippet, MAX_READ_SNIPPET_CHARS),
-              };
-              return truncateText(JSON.stringify(payload), MAX_TOOL_OUTPUT_CHARS);
-            } catch (e) {
-              return truncateText("Error: " + e, MAX_TOOL_OUTPUT_CHARS);
+        createTool({
+          name: "createOrUpdateFiles",
+          description: "Create or update files in the sandbox",
+          parameters: z.object({
+            files: z.array(
+              z.object({
+                path: z.string(),
+                content: z.string(),
+              }),
+            ),
+          }),
+          handler: async (
+            { files },
+            { step, network }: Tool.Options<AgentState>
+          ) => {
+            // Return only the files written in this call — avoids bloating the
+            // Inngest replay payload with the entire accumulated file state.
+            const writtenFiles = await step?.run("createOrUpdateFiles", async () => {
+              try {
+                const sandbox = await getSandbox(sandboxId, SANDBOX_RUN_TIMEOUT);
+                const newlyWritten: Record<string, string> = {};
+                for (const file of files) {
+                  await sandbox.files.write(file.path, file.content);
+                  newlyWritten[file.path] = file.content;
+                }
+                return newlyWritten;
+              } catch (e) {
+                return "Error: " + e;
+              }
+            });
+
+            if (typeof writtenFiles === "object") {
+              network.state.data.files = { ...network.state.data.files, ...writtenFiles };
             }
-          });
-        },
-      }),
-      createTool({
-        name: "progress",
-        description: "Record a user-visible step update",
-        parameters: z.object({
-          content: z.string().min(1),
+          },
         }),
-        handler: async ({ content }, { step }) => {
-          await step?.run("progress", () => createProgressMessage(content));
-          return "ok";
+        createTool({
+          name: "readFiles",
+          description: "Read files from the sandbox",
+          parameters: z.object({
+            files: z.array(z.string()),
+          }),
+          handler: async ({ files }, { step }) => {
+            return await step?.run("readFiles", async () => {
+              try {
+                const sandbox = await getSandbox(sandboxId, SANDBOX_RUN_TIMEOUT);
+                const contents = [];
+                for (const file of files) {
+                  const content = await sandbox.files.read(file);
+                  contents.push({ path: file, content });
+                }
+                return JSON.stringify(contents);
+              } catch (e) {
+                return "Error: " + e;
+              }
+            });
+          },
+        }),
+      ],
+      lifecycle: {
+        onResponse: async ({ result, network }) => {
+          const lastAssistantMessageText = lastAssistantTextMessageContent(result);
+          if (lastAssistantMessageText && network) {
+            if (lastAssistantMessageText.includes("<task_summary>")) {
+              network.state.data.summary = lastAssistantMessageText;
+            }
+          }
+          return result;
         },
-      }),
-    ];
-
-    const lifecycle: Agent.Lifecycle<AgentState> = {
-      onResponse: async ({
-        result,
-        network,
-      }: {
-        result: AgentResultType;
-        network?: { state: { data: AgentState } };
-      }) => {
-        if (!network) {
-          return result;
-        }
-
-        const finishReason = extractFinishReasonFromRaw(result.raw);
-        if (finishReason) {
-          network.state.data.finishReason = finishReason;
-        }
-        if (finishReason === "length" || finishReason === "content_filter") {
-          network.state.data.error =
-            "The model hit the output limit before completing the task. Please try again with a shorter request or a different model.";
-          return result;
-        }
-
-        const lastAssistantMessageText =
-          lastAssistantTextMessageContent(result);
-
-        if (lastAssistantMessageText) {
-          network.state.data.lastAssistantMessage =
-            lastAssistantMessageText.slice(0, 4000);
-        }
-
-        if (lastAssistantMessageText?.includes("<task_summary>")) {
-          network.state.data.summary = lastAssistantMessageText;
-        }
-
-        // Track consecutive tool-less iterations so the router can stop spinning.
-        const iterationHadToolCalls = result.output.some(
-          (msg) => msg.role === "tool_result",
-        );
-        if (iterationHadToolCalls) {
-          network.state.data.toolCallCount =
-            (network.state.data.toolCallCount ?? 0) + 1;
-          network.state.data.consecutiveNoToolCalls = 0;
-        } else {
-          network.state.data.consecutiveNoToolCalls =
-            (network.state.data.consecutiveNoToolCalls ?? 0) + 1;
-        }
-
-        return result;
       },
-    };
-
-    const buildCodeAgent = (model: typeof llmModels.code) =>
-      createAgent<AgentState>({
-        name: "code-agent",
-        description: "An expert coding agent",
-        system: PROMPT,
-        model,
-        tools,
-        lifecycle,
-      });
-
-    const buildNetwork = (agent: ReturnType<typeof buildCodeAgent>, state: ReturnType<typeof buildAgentState>) =>
-      createNetwork<AgentState>({
-        name: "coding-agent-network",
-        agents: [agent],
-        maxIter: 30,
-        defaultState: state,
-        router: async ({ network }) => {
-          if (network.state.data.error || network.state.data.summary) {
-            return;
-          }
-
-          // Smart early termination: if the agent has done real work (called at
-          // least one tool) and is now producing 2+ consecutive text-only responses,
-          // it finished but missed the <task_summary> tag. Synthesise the summary
-          // from the last assistant message so the run completes cleanly instead
-          // of spinning until maxIter.
-          const noToolStreak = network.state.data.consecutiveNoToolCalls ?? 0;
-          const hasCalledTools = (network.state.data.toolCallCount ?? 0) > 0;
-          if (noToolStreak >= 2 && hasCalledTools) {
-            if (network.state.data.lastAssistantMessage) {
-              network.state.data.summary = network.state.data.lastAssistantMessage;
-            }
-            return;
-          }
-
-          return agent;
-        },
-      });
-
-    const publishStream =
-      typeof publish === "function" && channelKey
-        ? async (chunk: AgentMessageChunk) => {
-            await publish(getAgentStreamChannel(channelKey).agent_stream(chunk));
-          }
-        : null;
-
-    const runWithAgent = async (
-      model: typeof llmModels.code,
-      modelName: string | null,
-      timeoutOverrideMs: number | null,
-      stepLabel: string,
-    ) => {
-      const state = buildAgentState();
-      const agent = buildCodeAgent(model);
-      const network = buildNetwork(agent, state);
-      const startedAt = Date.now();
-      logAgent("llm run started", { modelName, stepLabel });
-      const runPromise = network.run(runInput, {
-        state,
-        streaming: publishStream
-          ? { publish: publishStream, simulateChunking: false }
-          : undefined,
-      });
-      const timeoutMs =
-        typeof timeoutOverrideMs === "number" && timeoutOverrideMs > 0
-          ? timeoutOverrideMs
-          : agentTimeoutMs;
-      const result =
-        timeoutMs > 0
-          ? await runWithTimeout(runPromise, timeoutMs, "Coding agent run")
-          : await runPromise;
-      logLlmTiming("code-agent", modelName, startedAt);
-      logAgent("llm run completed", { modelName, durationMs: Date.now() - startedAt });
-      return { result, modelName };
-    };
-
-    type CodeRunResult = {
-      result: { state: { data: AgentState; results?: AgentResultType[] } };
-      modelName: string | null;
-    };
-
-    let runResult: CodeRunResult;
-
-    try {
-      runResult = (await runWithAgent(
-        llmModels.code,
-        llmModels.modelNames.code,
-        primaryModelTimeoutMs,
-        `code-agent:${llmModels.modelNames.code ?? "primary"}`,
-      )) as unknown as CodeRunResult;
-    } catch (error) {
-      if (isTimeoutError(error) && llmModels.codeFallback) {
-        await step.run("switching-model-progress", () =>
-          createProgressMessage("Primary model is slow. Switching to fallback model..."),
-        );
-        try {
-          runResult = (await runWithAgent(
-            llmModels.codeFallback,
-            llmModels.modelNames.codeFallback ?? llmModels.modelNames.code,
-            null,
-            `code-agent:${llmModels.modelNames.codeFallback ?? "fallback"}`,
-          )) as unknown as CodeRunResult;
-        } catch (fallbackError) {
-          const errorType = resolveAgentErrorType(fallbackError);
-          const errorMessage = resolveAgentErrorMessage(errorType);
-          await recordAgentFailure({
-            projectId: event.data.projectId,
-            sandboxId,
-            errorType,
-            errorMessage: String(fallbackError),
-            summaryFound: false,
-            filesCount: 0,
-          });
-          const message = buildUserFailureMessage({
-            errorType,
-            errorMessage,
-            finishReason: null,
-            summaryFound: false,
-            filesCount: 0,
-          });
-          await prisma.message.create({
-            data: {
-              projectId: event.data.projectId,
-              content: message,
-              role: "ASSISTANT",
-              type: "ERROR",
-            },
-          });
-          await cooldownSandbox();
-          return { error: errorType };
-        }
-      } else if (isToolArgumentsParseError(error) && llmModels.codeFallback) {
-        try {
-          runResult = (await runWithAgent(
-            llmModels.codeFallback,
-            llmModels.modelNames.codeFallback ?? llmModels.modelNames.code,
-            null,
-            `code-agent:${llmModels.modelNames.codeFallback ?? "fallback"}`,
-          )) as unknown as CodeRunResult;
-        } catch (fallbackError) {
-          const errorType = resolveAgentErrorType(fallbackError);
-          const errorMessage = resolveAgentErrorMessage(errorType);
-          await recordAgentFailure({
-            projectId: event.data.projectId,
-            sandboxId,
-            errorType,
-            errorMessage: String(fallbackError),
-            summaryFound: false,
-            filesCount: 0,
-          });
-          const message = buildUserFailureMessage({
-            errorType,
-            errorMessage,
-            finishReason: null,
-            summaryFound: false,
-            filesCount: 0,
-          });
-          await prisma.message.create({
-            data: {
-              projectId: event.data.projectId,
-              content: message,
-              role: "ASSISTANT",
-              type: "ERROR",
-            },
-          });
-          await cooldownSandbox();
-          return { error: errorType };
-        }
-      } else {
-        const errorType = resolveAgentErrorType(error);
-        const errorMessage = resolveAgentErrorMessage(errorType);
-        await recordAgentFailure({
-          projectId: event.data.projectId,
-          sandboxId,
-          errorType,
-          errorMessage: String(error),
-          summaryFound: false,
-          filesCount: 0,
-        });
-        const message = buildUserFailureMessage({
-          errorType,
-          errorMessage,
-          finishReason: null,
-          summaryFound: false,
-          filesCount: 0,
-        });
-        await prisma.message.create({
-          data: {
-            projectId: event.data.projectId,
-            content: message,
-            role: "ASSISTANT",
-            type: "ERROR",
-          },
-        });
-        await cooldownSandbox();
-        return { error: errorType };
-      }
-    }
-
-    const result = runResult.result;
-    const codeModelName = runResult.modelName ?? llmModels.modelNames.code;
-
-    const existingTitle = await step.run("get-existing-title", async () => {
-      const fragment = await prisma.fragment.findFirst({
-        where: {
-          message: {
-            projectId: event.data.projectId,
-          },
-        },
-        orderBy: {
-          createdAt: "asc",
-        },
-        select: {
-          title: true,
-        },
-      });
-
-      return fragment?.title ?? null;
     });
 
-    const responseGenerator = createAgent({
-      name: "response-generator",
-      description: "A response generator",
-      system: RESPONSE_PROMPT,
-      model: llmModels.response,
+    const network = createNetwork<AgentState>({
+      name: "coding-agent-network",
+      agents: [codeAgent],
+      maxIter: 15,
+      defaultState: state,
+      router: async ({ network }) => {
+        if (network.state.data.summary) return;
+        return codeAgent;
+      },
     });
 
-    let fragmentTitleResult: { output: Message[]; raw?: unknown } | null = null;
-    let fragmentTitle: string | null = existingTitle;
-    let responseResult: { output: Message[]; raw?: unknown } | null = null;
-    let responseOutput: Message[] = [];
-    let responseUsage: UsageShape | null = null;
+    const result = await network.run(event.data.value, { state });
 
-    if (!fragmentTitle) {
+    const fragmentTitleResult = await step.run("llm-fragment-title", async () => {
       const fragmentTitleGenerator = createAgent({
         name: "fragment-title-generator",
         description: "A fragment title generator",
         system: FRAGMENT_TITLE_PROMPT,
         model: llmModels.title,
       });
-
-      const titleStart = Date.now();
-      fragmentTitleResult = await step.run("llm-fragment-title", async () => {
-        try {
-          return await runWithTimeout(
-            fragmentTitleGenerator.run(result.state.data.summary),
-            DEFAULT_RESPONSE_TIMEOUT_MS,
-            "Fragment title generation",
-          );
-        } catch {
-          return null;
-        }
-      });
-      logLlmTiming("fragment-title", llmModels.modelNames.title, titleStart);
-      fragmentTitle = fragmentTitleResult
-        ? parseAgentOutput(fragmentTitleResult.output)
-        : null;
-    }
-
-    const isError =
-      Boolean(result.state.data.error) ||
-      !result.state.data.summary ||
-      Object.keys(result.state.data.files || {}).length === 0;
-
-    const resolvedSummary = result.state.data.summary
-      ? normalizeTaskSummary(result.state.data.summary)
-      : null;
-
-    if (!isError) {
-      await step.run("generating-response-progress", () =>
-        createProgressMessage("Generating response..."),
-      );
-
-      const responseStart = Date.now();
-      responseResult = await step.run("llm-response", async () => {
-        try {
-          const timeoutMs = responseTimeoutMs > 0 ? responseTimeoutMs : DEFAULT_RESPONSE_TIMEOUT_MS;
-          return await runWithTimeout(
-            responseGenerator.run(result.state.data.summary),
-            timeoutMs,
-            "Response generation",
-          );
-        } catch {
-          return null;
-        }
-      });
-      logLlmTiming("response", llmModels.modelNames.response, responseStart);
-      if (responseResult) {
-        responseOutput = responseResult.output;
-        responseUsage = extractUsageFromAgentResult(responseResult);
-      } else {
-        const fallback = resolvedSummary
-          ? `Here's what I built: ${resolvedSummary}`
-          : "Your task completed, but the response message could not be generated.";
-        responseOutput = [{ type: "text", role: "assistant", content: fallback }];
-      }
-    }
-
-    let contextSummaryResult: { output: Message[]; raw?: unknown } | null = null;
-    let nextContextSummary: string | null = null;
-    const nextHistoryResults =
-      !isError && result.state?.results
-        ? serializeAgentResults(result.state.results, historyLimit)
-        : null;
-
-    if (resolvedSummary && !isError) {
-      const contextSummaryGenerator = createAgent({
-        name: "context-summary-generator",
-        description: "Generates a compact project context summary",
-        system: CONTEXT_SUMMARY_PROMPT,
-        model: llmModels.response,
-      });
-
       try {
-        const contextStart = Date.now();
-        contextSummaryResult = await step.run("llm-context-summary", async () => {
-          try {
-            const timeoutMs = contextTimeoutMs > 0 ? contextTimeoutMs : DEFAULT_CONTEXT_TIMEOUT_MS;
-            return await runWithTimeout(
-              contextSummaryGenerator.run(
-                JSON.stringify({
-                  previous_summary: priorContextSummary ?? "",
-                  user_request: requestValue,
-                  task_summary: resolvedSummary,
-                }),
-              ),
-              timeoutMs,
-              "Context summary generation",
-            );
-          } catch {
-            return null;
-          }
-        });
-        logLlmTiming("context-summary", llmModels.modelNames.response, contextStart);
-      } catch (error) {
-        console.warn("Context summary generation failed or timed out", error);
-        contextSummaryResult = null;
-      }
-
-      if (contextSummaryResult) {
-        const parsedContextSummary = parseAgentOutput(contextSummaryResult.output);
-      if (parsedContextSummary) {
-        nextContextSummary = parsedContextSummary.slice(0, contextSummaryLimit);
-      }
-    }
-    }
-
-    await step.run("record-llm-usage", async () => {
-      const usageByModel = [
-        {
-          modelName: codeModelName,
-          usage: extractUsageFromNetwork(result),
-        },
-      ];
-
-      if (fragmentTitleResult) {
-        usageByModel.push({
-          modelName: llmModels.modelNames.title,
-          usage: extractUsageFromAgentResult(fragmentTitleResult),
-        });
-      }
-
-      if (responseUsage) {
-        usageByModel.push({
-          modelName: llmModels.modelNames.response,
-          usage: responseUsage,
-        });
-      }
-
-      if (contextSummaryResult) {
-        usageByModel.push({
-          modelName: llmModels.modelNames.response,
-          usage: extractUsageFromAgentResult(contextSummaryResult),
-        });
-      }
-
-      for (const item of usageByModel) {
-        await recordLlmUsage({
-          userId,
-          orgId,
-          provider: llmModels.provider,
-          model: item.modelName ?? "unknown",
-          promptTokens: item.usage?.promptTokens ?? 0,
-          completionTokens: item.usage?.completionTokens ?? 0,
-          totalTokens: item.usage?.totalTokens ?? 0,
-          costUsd: item.usage?.costUsd ?? 0,
-        });
+        return await fragmentTitleGenerator.run(result.state.data.summary);
+      } catch {
+        return null;
       }
     });
+
+    const responseResult = await step.run("llm-response", async () => {
+      const responseGenerator = createAgent({
+        name: "response-generator",
+        description: "A response generator",
+        system: RESPONSE_PROMPT,
+        model: llmModels.response,
+      });
+      try {
+        return await responseGenerator.run(result.state.data.summary);
+      } catch {
+        return null;
+      }
+    });
+
+    const isError =
+      !result.state.data.summary ||
+      Object.keys(result.state.data.files || {}).length === 0;
 
     const sandboxUrl = await step.run("get-sandbox-url", async () => {
       const sandbox = await getSandbox(sandboxId, SANDBOX_RUN_TIMEOUT);
@@ -1431,113 +325,55 @@ export const codeAgentFunction = inngest.createFunction(
 
     await step.run("save-result", async () => {
       if (isError) {
-        const filesCount = Object.keys(result.state.data.files || {}).length;
-        const summaryFound = Boolean(result.state.data.summary);
-        const errorType = result.state.data.error
-          ? "agent_error"
-          : !summaryFound
-            ? "missing_summary"
-            : filesCount === 0
-              ? "no_files"
-              : "unknown_error";
-        const message = buildUserFailureMessage({
-          errorType,
-          errorMessage: result.state.data.error ?? null,
-          finishReason: result.state.data.finishReason ?? null,
-          summaryFound,
-          filesCount,
-        });
-
-        await recordAgentFailure({
-          projectId: event.data.projectId,
-          sandboxId,
-          errorType,
-          errorMessage: result.state.data.error ?? null,
-          finishReason: result.state.data.finishReason ?? null,
-          lastAssistantMessage: result.state.data.lastAssistantMessage ?? null,
-          summaryFound,
-          filesCount,
-        });
-        return await prisma.message.create({
+        return prisma.message.create({
           data: {
             projectId: event.data.projectId,
-            content: message,
+            content: "Something went wrong. Please try again.",
             role: "ASSISTANT",
             type: "ERROR",
           },
         });
       }
 
-      const resolvedTitle = fragmentTitle ?? "Fragment";
-
-      return await prisma.message.create({
+      return prisma.message.create({
         data: {
           projectId: event.data.projectId,
-          content: parseAgentOutput(responseOutput),
+          content: responseResult
+            ? parseAgentOutput(responseResult.output)
+            : "Here's what I built for you.",
           role: "ASSISTANT",
           type: "RESULT",
           fragment: {
             create: {
-              sandboxUrl: sandboxUrl,
-              title: resolvedTitle,
-              summary: resolvedSummary,
+              sandboxUrl,
+              title: fragmentTitleResult
+                ? parseAgentOutput(fragmentTitleResult.output)
+                : "Fragment",
               files: result.state.data.files,
             },
           },
         },
-      })
-    });
-
-    const fallbackSummary = nextContextSummary
-      ?? priorContextSummary
-      ?? (resolvedSummary ? resolvedSummary.slice(0, contextSummaryLimit) : null);
-
-    if (fallbackSummary || nextHistoryResults) {
-      await step.run("save-project-context", async () => {
-        await prisma.projectContext.upsert({
-          where: { projectId: event.data.projectId },
-          update: {
-            summary: fallbackSummary ?? "Project context summary pending.",
-            results: (nextHistoryResults ?? undefined) as never,
-          },
-          create: {
-            projectId: event.data.projectId,
-            summary: fallbackSummary ?? "Project context summary pending.",
-            results: (nextHistoryResults ?? undefined) as never,
-          },
-        });
-      });
-    }
-
-    await step.run("record-sandbox-usage", async () => {
-      const project = await prisma.project.findUnique({
-        where: { id: event.data.projectId },
-        select: { sandboxUpdatedAt: true },
-      });
-      await recordSandboxUsage({
-        projectId: event.data.projectId,
-        userId,
-        orgId,
-        lastUpdatedAt: project?.sandboxUpdatedAt ?? null,
-      });
-      await touchProjectSandbox({
-        projectId: event.data.projectId,
-        sandboxId,
-        sandboxUrl,
       });
     });
 
     await step.run("cooldown-sandbox", async () => {
       try {
         await Sandbox.setTimeout(sandboxId, SANDBOX_TIMEOUT);
+        await touchProjectSandbox({
+          projectId: event.data.projectId,
+          sandboxId,
+          sandboxUrl,
+        });
       } catch (error) {
-        console.warn("Failed to reset sandbox timeout", error);
+        console.warn("Failed to cooldown sandbox", error);
       }
     });
 
-    return { 
+    return {
       url: sandboxUrl,
-      title: fragmentTitle ?? "Fragment",
+      title: fragmentTitleResult
+        ? parseAgentOutput(fragmentTitleResult.output)
+        : "Fragment",
       files: result.state.data.files,
       summary: result.state.data.summary,
     };

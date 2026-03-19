@@ -3,25 +3,8 @@ import { serve } from "inngest/next";
 import { inngest } from "@/inngest/client";
 import { codeAgentFunction } from "@/inngest/functions";
 
-const logInngestEnv = () => {
-  const eventKey = process.env.INNGEST_EVENT_KEY;
-  const eventKeyPrefix = eventKey ? `${eventKey.slice(0, 6)}…` : "missing";
-  const payload = {
-    env: process.env.INNGEST_ENV ?? "default",
-    devMode: process.env.INNGEST_DEV ?? "unset",
-    serveHost: process.env.INNGEST_SERVE_HOST ?? "unset",
-    hasEventKey: Boolean(eventKey),
-    eventKeyPrefix,
-    hasSigningKey: Boolean(process.env.INNGEST_SIGNING_KEY),
-  };
-  console.info("[inngest] env", JSON.stringify(payload));
-};
-
-logInngestEnv();
-
-// Allow longer execution — Railway's reverse proxy closes idle connections
-// at ~30 s. Streaming mode sends periodic keepalive bytes so the proxy
-// never sees an idle connection during long-running steps.
+// maxDuration and streaming prevent Railway's reverse-proxy from closing
+// the connection during long-running steps (context deadline / i/o timeout).
 export const maxDuration = 300;
 
 export const { GET, POST, PUT } = serve({

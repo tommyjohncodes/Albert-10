@@ -641,10 +641,10 @@ export const codeAgentFunction = inngest.createFunction(
           : null,
       });
 
-      return {
-        sandboxId: managedSandbox.sandboxId,
-        cumulativeFiles,
-      };
+      // Return only the sandboxId — do NOT return cumulativeFiles. Inngest
+      // serialises every step result into the replay payload, so large file
+      // contents here would bloat every subsequent round-trip to the server.
+      return { sandboxId: managedSandbox.sandboxId };
     });
     logAgent("sandbox resolved", sandboxResult ?? undefined);
 
@@ -777,9 +777,7 @@ export const codeAgentFunction = inngest.createFunction(
       createState<AgentState>(
         {
           summary: "",
-          // Pre-populate with cumulative files from all prior runs so the agent
-          // can build on them and the saved fragment contains the complete state.
-          files: sandboxResult?.cumulativeFiles ?? {},
+          files: {},
           userId: resolvedUserId,
         },
         {
@@ -845,7 +843,7 @@ export const codeAgentFunction = inngest.createFunction(
           { files },
           { step, network }: Tool.Options<AgentState>
         ) => {
-          const newFiles = await step?.run("createOrUpdateFiles", async () => {
+          const writtenFiles = await step?.run("createOrUpdateFiles", async () => {
             if (files.length > 0) {
               const fileList = files.map((file) => file.path).join(", ");
               await createProgressMessage(
@@ -855,21 +853,21 @@ export const codeAgentFunction = inngest.createFunction(
               );
             }
             try {
-              const updatedFiles = network.state.data.files || {};
               const sandbox = await getSandbox(sandboxId, SANDBOX_RUN_TIMEOUT);
+              const newlyWritten: Record<string, string> = {};
               for (const file of files) {
                 await sandbox.files.write(file.path, file.content);
-                updatedFiles[file.path] = file.content;
+                newlyWritten[file.path] = file.content;
               }
 
-              return updatedFiles;
+              return newlyWritten;
             } catch (e) {
               return "Error: " + e;
             }
           });
 
-          if (typeof newFiles === "object") {
-            network.state.data.files = newFiles;
+          if (typeof writtenFiles === "object") {
+            network.state.data.files = { ...network.state.data.files, ...writtenFiles };
           }
         }
       }),

@@ -46,6 +46,8 @@ interface AgentState {
   error?: string;
   finishReason?: string;
   lastAssistantMessage?: string;
+  consecutiveNoToolCalls?: number;
+  toolCallCount?: number;
 };
 
 interface UsageShape {
@@ -1016,6 +1018,19 @@ export const codeAgentFunction = inngest.createFunction(
           network.state.data.summary = lastAssistantMessageText;
         }
 
+        // Track consecutive tool-less iterations so the router can stop spinning.
+        const iterationHadToolCalls = result.output.some(
+          (msg) => msg.role === "tool_result",
+        );
+        if (iterationHadToolCalls) {
+          network.state.data.toolCallCount =
+            (network.state.data.toolCallCount ?? 0) + 1;
+          network.state.data.consecutiveNoToolCalls = 0;
+        } else {
+          network.state.data.consecutiveNoToolCalls =
+            (network.state.data.consecutiveNoToolCalls ?? 0) + 1;
+        }
+
         return result;
       },
     };
@@ -1034,16 +1049,24 @@ export const codeAgentFunction = inngest.createFunction(
       createNetwork<AgentState>({
         name: "coding-agent-network",
         agents: [agent],
-        maxIter: 15,
+        maxIter: 30,
         defaultState: state,
         router: async ({ network }) => {
-          const summary = network.state.data.summary;
-
-          if (network.state.data.error) {
+          if (network.state.data.error || network.state.data.summary) {
             return;
           }
 
-          if (summary) {
+          // Smart early termination: if the agent has done real work (called at
+          // least one tool) and is now producing 2+ consecutive text-only responses,
+          // it finished but missed the <task_summary> tag. Synthesise the summary
+          // from the last assistant message so the run completes cleanly instead
+          // of spinning until maxIter.
+          const noToolStreak = network.state.data.consecutiveNoToolCalls ?? 0;
+          const hasCalledTools = (network.state.data.toolCallCount ?? 0) > 0;
+          if (noToolStreak >= 2 && hasCalledTools) {
+            if (network.state.data.lastAssistantMessage) {
+              network.state.data.summary = network.state.data.lastAssistantMessage;
+            }
             return;
           }
 

@@ -19,10 +19,15 @@ const logInngestEnv = () => {
 
 logInngestEnv();
 
-// Create an API that serves zero functions
+// Allow longer execution — Railway's reverse proxy closes idle connections
+// at ~30 s. Streaming mode sends periodic keepalive bytes so the proxy
+// never sees an idle connection during long-running steps.
+export const maxDuration = 300;
+
 export const { GET, POST, PUT } = serve({
   client: inngest,
   functions: [
     codeAgentFunction,
   ],
+  streaming: "allow",
 });
